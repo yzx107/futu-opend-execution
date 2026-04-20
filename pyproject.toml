@@ -1,0 +1,6 @@
+[project]
+name = "futu-opend-execution"
+version = "0.1.0"
+description = "Hong Kong Futu/OpenD execution layer"
+readme = "README.md"
+requires-python = ">=3.11"
