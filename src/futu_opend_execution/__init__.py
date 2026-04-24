@@ -48,6 +48,27 @@ from futu_opend_execution.services.snatch import (
     wait_for_grey_market_open,
 )
 
+_GREY_OPEN_EXPORTS = {
+    "GreyMarketOpenTrigger",
+    "GreyMarketOrderIntent",
+    "GreyMarketSignal",
+    "GreyMarketTriggerDecision",
+    "GreyMarketTriggerRules",
+    "JsonlEventLogger",
+    "TriggerAction",
+    "run_replay",
+    "signal_from_record",
+}
+
+
+def __getattr__(name: str):
+    if name in _GREY_OPEN_EXPORTS:
+        from futu_opend_execution import grey_open
+
+        return getattr(grey_open, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 __all__ = [
     "BrokerConfigurationError",
     "BrokerDependencyError",
@@ -63,8 +84,14 @@ __all__ = [
     "GreyMarketBuyPlan",
     "GreyMarketBuyRequest",
     "GreyMarketExecutionReport",
+    "GreyMarketOpenTrigger",
+    "GreyMarketOrderIntent",
     "GreyMarketSnatchReport",
+    "GreyMarketSignal",
+    "GreyMarketTriggerDecision",
+    "GreyMarketTriggerRules",
     "InsufficientLiquidityError",
+    "JsonlEventLogger",
     "MarketSession",
     "MarketDataClient",
     "MarketDataError",
@@ -79,11 +106,14 @@ __all__ = [
     "RuntimeConfig",
     "SimulatedExecutionResult",
     "TradeBroker",
+    "TriggerAction",
     "TimeInForce",
     "TradeMode",
     "build_grey_market_buy_plan",
     "execute_grey_market_buy",
     "run_grey_market_snatch",
+    "run_replay",
+    "signal_from_record",
     "submit_grey_market_buy_plan",
     "wait_for_grey_market_open",
 ]

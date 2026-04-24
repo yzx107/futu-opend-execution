@@ -20,6 +20,7 @@ Current scope:
 - grey-market buy-at-open planning logic
 - visible-order-book simulation for buy orders
 - broker submission workflow with cancel-on-timeout execution
+- dark-status open trigger with JSONL logging and replay
 - CI to ensure the package installs and tests cleanly
 - documentation for safe setup and future architecture
 
@@ -27,7 +28,7 @@ Planned scope:
 - OpenD connection bootstrap
 - account and trading-context adapters
 - broker-backed order placement and status polling
-- dry-run and paper-trading workflows
+- paper-trading workflows
 
 Out of scope for the early phase:
 - unattended real-money trading by default
@@ -228,6 +229,106 @@ PYTHONPATH=src python -m futu_opend_execution.harness 09868 250
 PYTHONPATH=src python -m futu_opend_execution.harness 09868 250 --execute --remark grey-open-snatch
 ```
 
+## Grey-Market Open Trigger
+
+The `grey_open` runner is the safety-first open trigger described in the
+project notes. It subscribes to `QUOTE`, `ORDER_BOOK`, and `TICKER`, reads
+`dark_status` plus the best bid/ask, and only emits an order intent when:
+
+- `dark_status == TRADING`
+- `best_ask > 0`
+- `best_ask <= max_price`
+- `quantity <= max_qty`
+- `max_price * quantity <= max_notional`
+- `max_order_attempts` and cooldown/rate windows are still available
+- the optional kill-switch file does not exist
+
+It deliberately stays below the documented OpenD order limit by allowing at most
+14 order attempts per 30-second window, and it enforces at least 50ms between
+attempts even if a lower cooldown is configured.
+
+### Live dry-run
+
+Dry-run is the default. It connects to OpenD, prepares quote and trade contexts,
+logs all events, and prints `would_place_order` instead of unlocking trade or
+calling `place_order`.
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.grey_open live HK.01234 \
+  --quantity 1000 \
+  --max-price 12.80 \
+  --max-qty 1000 \
+  --max-notional 12800 \
+  --max-order-attempts 3 \
+  --cool-down-ms 300 \
+  --kill-switch-file /tmp/futu-grey-open.STOP \
+  --log-file logs/grey_open_01234.jsonl
+```
+
+### Replay / simulate
+
+Replay mode consumes historical JSONL quote/order-book events and runs the same
+trigger logic without touching OpenD. This is the preferred way to test trigger
+thresholds before any real-market session.
+
+Accepted replay records can be flat:
+
+```json
+{"symbol":"HK.01234","dark_status":"TRADING","best_bid":"12.60","best_ask":"12.70"}
+```
+
+or OpenD-shaped:
+
+```json
+{"symbol":"HK.01234","raw_quote":{"dark_status":"TRADING"},"raw_order_book":{"Ask":[["12.70",1000,1]],"Bid":[["12.60",500,1]],"svr_recv_time_ask":"2026-04-24 16:15:00.001"}}
+```
+
+Run replay:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.grey_open replay logs/grey_open_01234.jsonl HK.01234 \
+  --quantity 1000 \
+  --max-price 12.80 \
+  --max-qty 1000 \
+  --max-notional 12800 \
+  --log-file logs/replay_01234.jsonl
+```
+
+### Real-run
+
+Real trading requires both safeguards:
+
+- environment gate: `FUTU_ALLOW_REAL_TRADE=1`
+- CLI gate: `--real`
+
+The runner unlocks trade before the loop, installs best-effort order/deal push
+handlers, then submits normal day limit buy orders with `OrderType.NORMAL`,
+`TrdSide.BUY`, `TrdEnv.REAL`, and `TimeInForce.DAY`.
+
+```bash
+FUTU_ALLOW_REAL_TRADE=1 FUTU_TRADE_PASSWORD='...' \
+PYTHONPATH=src python -m futu_opend_execution.grey_open live HK.01234 \
+  --real \
+  --quantity 1000 \
+  --max-price 12.80 \
+  --max-qty 1000 \
+  --max-notional 12800 \
+  --max-order-attempts 3 \
+  --cool-down-ms 500 \
+  --kill-switch-file /tmp/futu-grey-open.STOP \
+  --log-file logs/real_grey_open_01234.jsonl
+```
+
+Create the kill-switch file from another terminal to stop new order generation:
+
+```bash
+touch /tmp/futu-grey-open.STOP
+```
+
+Every run writes JSONL events including `quote_event`, `orderbook_event`,
+`trigger_event`, `order_request`, `order_response`, `order_push`, `fill_event`,
+and `error_event` where applicable.
+
 ## Quick start
 
 ### 1. Create a virtual environment
@@ -284,6 +385,8 @@ python -m unittest discover -s tests
 - Grey-market planning is currently snapshot-driven and simulation-first
 - The Futu broker adapter requires a logged-in OpenD instance plus the optional
   `futu-api` package
+- The grey-open trigger defaults to dry-run and must be replay-tested before a
+  real session
 - When the SDK needs a writable HOME for its own log files, set
   `FUTU_SDK_HOME_OVERRIDE` to a writable directory before importing `futu`
 - Real trading still requires explicit opt-in via `FUTU_ALLOW_REAL_TRADE=1`
@@ -301,7 +404,7 @@ python -m unittest discover -s tests
 - [ ] connection health check
 - [x] execution request model
 - [x] visible-book simulation for grey-market buy planning
-- [ ] structured logging
+- [x] structured logging
 - [x] grey-market order submitter wired to an OpenD adapter shape
 
 ### Phase 3: broker integration
@@ -309,7 +412,7 @@ python -m unittest discover -s tests
 - [x] order placement abstraction
 - [x] order status reconciliation
 - [ ] retry / timeout / reconnect policy
-- [ ] explicit real-trade guardrails
+- [x] explicit real-trade guardrails
 
 ## License
 
