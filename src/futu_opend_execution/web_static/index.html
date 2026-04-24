@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Futu/OpenD 执行控制台</title>
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="shell">
+      <header class="status-bar">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <div>
+            <h1>Futu/OpenD 执行控制台</h1>
+            <p id="statusText">连接中</p>
+          </div>
+        </div>
+        <div class="status-strip">
+          <div class="metric">
+            <span>OpenD</span>
+            <strong id="healthStatus">--</strong>
+          </div>
+          <div class="metric">
+            <span>最近报价</span>
+            <strong id="lastQuote">--</strong>
+          </div>
+          <div class="metric">
+            <span>事件</span>
+            <strong id="eventCount">0</strong>
+          </div>
+          <button class="ghost-button" id="refreshAllBtn" type="button">刷新</button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel normal-panel" aria-labelledby="normalTitle">
+          <div class="panel-head">
+            <div>
+              <h2 id="normalTitle">正常交易</h2>
+              <p id="normalQuote">--</p>
+            </div>
+            <button class="small-button" id="normalQuoteBtn" type="button">刷新报价</button>
+          </div>
+
+          <form id="normalForm" class="trade-form">
+            <label>
+              <span>代码</span>
+              <input id="normalSymbol" name="symbol" autocomplete="off" value="HK.00700" required>
+            </label>
+
+            <div class="field">
+              <span>方向</span>
+              <div class="segmented" role="group" aria-label="正常交易方向">
+                <input id="normalSideBuy" type="radio" name="side" value="BUY" checked>
+                <label for="normalSideBuy">买入</label>
+                <input id="normalSideSell" type="radio" name="side" value="SELL">
+                <label for="normalSideSell">卖出</label>
+              </div>
+            </div>
+
+            <div class="field">
+              <span>订单类型</span>
+              <div class="segmented" role="group" aria-label="订单类型">
+                <input id="orderNormal" type="radio" name="order_type" value="NORMAL" checked>
+                <label for="orderNormal">限价</label>
+                <input id="orderMarket" type="radio" name="order_type" value="MARKET">
+                <label for="orderMarket">市价</label>
+              </div>
+            </div>
+
+            <div class="field">
+              <span>数量模式</span>
+              <div class="segmented" role="group" aria-label="数量模式">
+                <input id="qtyLots" type="radio" name="quantity_mode" value="LOTS" checked>
+                <label for="qtyLots">手数</label>
+                <input id="qtyShares" type="radio" name="quantity_mode" value="SHARES">
+                <label for="qtyShares">股数</label>
+              </div>
+            </div>
+
+            <div class="grid-2">
+              <label>
+                <span>手数</span>
+                <input id="normalLots" name="lots" type="number" min="0" step="1" value="1">
+              </label>
+              <label>
+                <span>股数</span>
+                <input id="normalShares" name="shares" type="number" min="0" step="1" value="0">
+              </label>
+            </div>
+
+            <div class="grid-2">
+              <label>
+                <span>限价</span>
+                <input id="normalLimitPrice" name="limit_price" type="number" min="0" step="0.001" placeholder="0.000">
+              </label>
+              <label>
+                <span>最大金额</span>
+                <input id="normalMaxNotional" name="max_notional" type="number" min="0" step="0.01" placeholder="0.00">
+              </label>
+            </div>
+
+            <label class="confirm-field" id="normalConfirmWrap">
+              <span>实盘确认</span>
+              <input id="normalConfirmText" name="confirm_text" autocomplete="off" placeholder="输入：确认实盘">
+            </label>
+
+            <div class="action-row">
+              <label class="switch">
+                <input id="normalDryRun" name="dry_run" type="checkbox" checked>
+                <span></span>
+                <strong id="normalModeText">Dry-run</strong>
+              </label>
+              <button class="primary-button" type="submit">提交订单</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel grey-panel" aria-labelledby="greyTitle">
+          <div class="panel-head">
+            <div>
+              <h2 id="greyTitle">暗盘抢单</h2>
+              <p id="greyState">未布防</p>
+            </div>
+            <button class="danger-button small" id="killSwitchBtn" type="button">一键停止</button>
+          </div>
+
+          <form id="greyForm" class="trade-form">
+            <label>
+              <span>代码</span>
+              <input id="greySymbol" name="symbol" autocomplete="off" value="HK.02460" required>
+            </label>
+
+            <div class="grid-2">
+              <label>
+                <span>最高价</span>
+                <input id="greyMaxPrice" name="max_price" type="number" min="0" step="0.001" required>
+              </label>
+              <label>
+                <span>数量</span>
+                <input id="greyQuantity" name="quantity" type="number" min="1" step="1" value="1000" required>
+              </label>
+            </div>
+
+            <label>
+              <span>最大金额</span>
+              <input id="greyMaxNotional" name="max_notional" type="number" min="0" step="0.01" placeholder="0.00">
+            </label>
+
+            <div class="grid-2">
+              <label>
+                <span>最大尝试</span>
+                <input id="greyMaxAttempts" name="max_order_attempts" type="number" min="1" step="1" value="5">
+              </label>
+              <label>
+                <span>冷却毫秒</span>
+                <input id="greyCoolDown" name="cool_down_ms" type="number" min="0" step="50" value="300">
+              </label>
+            </div>
+
+            <div class="action-row">
+              <label class="switch">
+                <input id="greyDryRun" name="dry_run" type="checkbox" checked>
+                <span></span>
+                <strong id="greyModeText">Dry-run</strong>
+              </label>
+              <div class="button-pair">
+                <button class="secondary-button" id="greyEvaluateBtn" type="submit">评估试跑</button>
+                <button class="primary-button" id="greyArmBtn" type="button">布防</button>
+              </div>
+            </div>
+          </form>
+        </section>
+      </main>
+
+      <section class="event-panel" aria-labelledby="eventsTitle">
+        <div class="panel-head compact">
+          <h2 id="eventsTitle">事件日志</h2>
+          <button class="small-button" id="eventsRefreshBtn" type="button">刷新日志</button>
+        </div>
+        <ol id="eventLog" class="event-log" aria-live="polite"></ol>
+      </section>
+    </div>
+
+    <script src="./app.js" defer></script>
+  </body>
+</html>

@@ -1,58 +1,66 @@
 # futu-opend-execution
 
-Hong Kong Futu/OpenD execution layer focused on simulated execution first.
+面向港股富途 OpenD 的执行层原型，默认以模拟、dry-run 和可回放验证为先。
 
-## Why this repo exists
+## 项目目标
 
-This repository is intended to isolate Futu/OpenD order execution concerns from broader research code.
+这个仓库用于把 Futu/OpenD 的下单、风控、行情触发和日志记录逻辑从研究代码里独立出来。
 
-The initial goal is to build a small, testable execution layer that:
-- talks to a local Futu OpenD gateway
-- starts with simulated trading only
-- keeps real-trade enablement behind an explicit hard gate
-- is suitable for later extension to IPO first-day and grey-market workflows
+当前目标是构建一套小而可测试的执行层：
 
-## Scope
+- 连接本机 Futu OpenD 网关
+- 默认不做真实下单
+- 真实交易必须经过显式开关和多重风控
+- 支持后续扩展到港股新股暗盘、首日交易等场景
 
-Current scope:
-- Python package scaffold
-- environment-based connection settings
-- grey-market buy-at-open planning logic
-- visible-order-book simulation for buy orders
-- broker submission workflow with cancel-on-timeout execution
-- dark-status open trigger with JSONL logging and replay
-- CI to ensure the package installs and tests cleanly
-- documentation for safe setup and future architecture
+## 范围
 
-Planned scope:
-- OpenD connection bootstrap
-- account and trading-context adapters
-- broker-backed order placement and status polling
-- paper-trading workflows
+当前已经包含：
 
-Out of scope for the early phase:
-- unattended real-money trading by default
-- strategy logic
-- portfolio optimization
-- signal generation
-- credential storage in git
+- Python 包结构
+- 基于环境变量的运行配置
+- 暗盘买入计划器
+- 基于可见卖盘的限价买入模拟
+- 经纪商提交、轮询、超时撤单流程
+- `dark_status` 开盘触发器
+- JSONL 事件日志
+- replay 回放模式
+- 单元测试
+- 安全运行文档
 
-## Safety model
+计划继续完善：
 
-This project is intentionally simulation-first.
+- OpenD 连接健康检查
+- retry / timeout / reconnect 策略
+- 更完整的账户与交易上下文探针
+- paper-trading 工作流
 
-Environment switch:
-- `FUTU_ALLOW_REAL_TRADE=0` means real trading must remain disabled
-- any real-trade support should require explicit opt-in, separate checks, and additional safeguards
+当前阶段不做：
 
-Design principles:
-- fail closed
-- validate inputs before sending orders
-- log every execution intent and broker response
-- separate strategy from execution
-- keep credentials and environment-specific configuration out of version control
+- 默认无人值守实盘交易
+- 策略信号生成
+- 组合优化
+- 把账号、密码等敏感信息提交到 git
 
-## Repository layout
+## 安全模型
+
+本项目刻意采用 simulation-first / dry-run-first 设计。
+
+核心开关：
+
+- `FUTU_ALLOW_REAL_TRADE=0`：真实交易必须关闭
+- `FUTU_ALLOW_REAL_TRADE=1`：只表示环境允许真实交易，CLI 仍需显式 `--real`
+- `FUTU_TRADE_PASSWORD`：真实账户解锁交易时才需要
+
+设计原则：
+
+- 默认 fail closed
+- 下单前先做输入校验和风控校验
+- 每个触发、下单请求、券商响应、错误都写 JSONL
+- 策略逻辑和执行逻辑分离
+- `.env` 被 `.gitignore` 忽略，敏感信息不进入仓库
+
+## 目录结构
 
 ```text
 .
@@ -64,98 +72,48 @@ Design principles:
 ├── README.md
 ├── setup.py
 ├── tests/
+│   ├── test_grey_open.py
 │   ├── test_greymarket.py
-│   └── test_orders.py
+│   ├── test_orders.py
+│   └── test_snatch.py
 └── src/
     └── futu_opend_execution/
         ├── __init__.py
         ├── config.py
+        ├── grey_open.py
         ├── models.py
         ├── risk.py
         ├── execution/
-        │   ├── __init__.py
         │   ├── broker.py
         │   ├── futu.py
+        │   ├── futu_quote.py
+        │   ├── futu_runtime.py
+        │   ├── market_data.py
         │   └── simulator.py
         └── services/
-            ├── __init__.py
             ├── greymarket.py
-            └── orders.py
+            ├── orders.py
+            └── snatch.py
 ```
 
-Expected future expansion:
+## 暗盘买入计划器
+
+`build_grey_market_buy_plan(...)` 用于回答一个问题：
 
 ```text
-src/futu_opend_execution/
-├── client.py          # OpenD connectivity
-├── config.py          # env parsing and runtime settings
-├── models.py          # execution request / response models
-├── risk.py            # validation and guardrails
-├── execution/
-│   ├── simulator.py
-│   └── broker.py
-└── services/
-    └── orders.py
+给定当前可见卖盘，想买入目标数量，最低需要挂到什么限价？
 ```
 
-## Grey-Market Buy Planner
+当前行为：
 
-This repository now includes a simulation-first planner for a grey-market
-"buy after open but avoid overpaying" workflow.
+- 读取开盘后的可见 ask book 快照
+- 从低到高遍历卖盘档位
+- 找到覆盖目标数量所需的边际卖价
+- 可选增加若干 tick buffer
+- 在同一快照上模拟预期成交
+- 如果可见流动性不足或超过价格上限，则拒绝生成计划
 
-Current planner behavior:
-- takes a snapshot of the visible ask book after grey-market open
-- walks the ask ladder from low to high until the target quantity is covered
-- uses the marginal ask as the minimum limit price required for a full visible fill
-- optionally adds a tick buffer when queue priority matters more than price
-- simulates the expected fill against the same snapshot before any broker wiring exists
-
-This means the current feature answers:
-"Given the visible asks right now, what is the lowest limit price that should
-cover my target quantity?"
-
-It does not yet guarantee a live fill because OpenD submission, latency,
-queue-position changes, and disappearing liquidity are still outside the current
-scope.
-
-## Broker Submission
-
-This repository now includes a broker-facing execution workflow and a Futu OpenD
-adapter shape.
-
-Current behavior:
-- `submit_grey_market_buy_plan(...)` submits a limit buy plan, polls the order
-  state, and returns a consolidated execution report
-- `execute_grey_market_buy(...)` combines planning plus submission in one step
-- `run_grey_market_snatch(...)` waits for a tradable market state, fetches the
-  live order book, builds the plan, and optionally submits it
-- `FutuOpenDTradeBroker` maps the workflow to Futu's trading context methods for
-  place-order, query-order, history-order lookup, cancel, and unlock
-- `FutuOpenDQuoteClient` maps market-state and order-book reads to Futu quote
-  APIs
-- `IOC` is emulated as a `DAY` order plus cancel-on-timeout because the current
-  Futu stock order flow documented for Python exposes `DAY` and `GTC`, but not a
-  native `IOC`
-
-The Futu SDK does not expose a dedicated "grey market open" enum in its
-`MarketState` constants. The harness therefore waits for a configurable set of
-"tradable enough" market states instead of a single hard-coded grey-market
-value.
-
-This means the current system can express:
-"Place the lowest-price limit order that should cover my target quantity, then
-cancel the remainder quickly if the order does not complete."
-
-### Optional broker dependency
-
-The OpenD adapter keeps `futu-api` optional so planning and tests still work
-without the broker SDK.
-
-```bash
-pip install -e '.[futu]'
-```
-
-### Example
+示例：
 
 ```python
 from futu_opend_execution import (
@@ -187,7 +145,27 @@ print(plan.selected_limit_price)        # 3.29
 print(plan.expected_fill.average_price) # 3.286
 ```
 
-### Submission example
+注意：计划器只基于快照计算，不保证真实成交。真实环境还会受延迟、队列位置、盘口撤单、券商内部撮合等影响。
+
+## 经纪商提交流程
+
+仓库提供了面向 OpenD 的交易适配器和提交服务：
+
+- `submit_grey_market_buy_plan(...)`：提交限价买入计划，轮询订单状态，返回执行报告
+- `execute_grey_market_buy(...)`：计划生成和提交合并为一步
+- `run_grey_market_snatch(...)`：等待可交易状态、拉取盘口、生成计划、可选提交
+- `FutuOpenDTradeBroker`：映射到 OpenD 的下单、查单、历史查单、撤单、解锁
+- `FutuOpenDQuoteClient`：映射到 OpenD 的市场状态和盘口读取
+
+当前 Futu 股票交易路径没有使用原生 `IOC`。项目用 `DAY` 单加快速撤单来模拟 IOC 行为。
+
+安装 OpenD SDK 依赖：
+
+```bash
+pip install -e '.[futu]'
+```
+
+提交示例：
 
 ```python
 from futu_opend_execution import (
@@ -222,36 +200,40 @@ print(report.latest_order.dealt_quantity)
 print(report.remaining_quantity)
 ```
 
-### CLI harness
+CLI：
 
 ```bash
 PYTHONPATH=src python -m futu_opend_execution.harness 09868 250
 PYTHONPATH=src python -m futu_opend_execution.harness 09868 250 --execute --remark grey-open-snatch
 ```
 
-## Grey-Market Open Trigger
+## 暗盘开盘触发器
 
-The `grey_open` runner is the safety-first open trigger described in the
-project notes. It subscribes to `QUOTE`, `ORDER_BOOK`, and `TICKER`, reads
-`dark_status` plus the best bid/ask, and only emits an order intent when:
+`grey_open` 是更贴近实盘开盘场景的安全触发器。它会订阅或读取：
+
+- `QUOTE`
+- `ORDER_BOOK`
+- `TICKER`
+- `dark_status`
+- best bid / best ask
+- 盘口服务器时间戳
+
+只有同时满足以下条件，才会生成订单意图：
 
 - `dark_status == TRADING`
 - `best_ask > 0`
 - `best_ask <= max_price`
 - `quantity <= max_qty`
 - `max_price * quantity <= max_notional`
-- `max_order_attempts` and cooldown/rate windows are still available
-- the optional kill-switch file does not exist
+- 未超过 `max_order_attempts`
+- 冷却时间和 30 秒窗口限频未触发
+- kill-switch 文件不存在
 
-It deliberately stays below the documented OpenD order limit by allowing at most
-14 order attempts per 30-second window, and it enforces at least 50ms between
-attempts even if a lower cooldown is configured.
+为了低于 OpenD 文档限频，触发器最多允许 30 秒内 14 次订单尝试，并且强制连续两次尝试至少间隔 50ms。
 
-### Live dry-run
+### Live Dry-run
 
-Dry-run is the default. It connects to OpenD, prepares quote and trade contexts,
-logs all events, and prints `would_place_order` instead of unlocking trade or
-calling `place_order`.
+dry-run 是默认模式。它会连接 OpenD，准备行情和交易上下文，记录事件并打印 `would_place_order`，但不会解锁交易，也不会调用 `place_order`。
 
 ```bash
 PYTHONPATH=src python -m futu_opend_execution.grey_open live HK.01234 \
@@ -265,25 +247,29 @@ PYTHONPATH=src python -m futu_opend_execution.grey_open live HK.01234 \
   --log-file logs/grey_open_01234.jsonl
 ```
 
-### Replay / simulate
+如果 Futu SDK 需要写日志目录，建议设置：
 
-Replay mode consumes historical JSONL quote/order-book events and runs the same
-trigger logic without touching OpenD. This is the preferred way to test trigger
-thresholds before any real-market session.
+```bash
+FUTU_SDK_HOME_OVERRIDE=/tmp/futu-sdk-home
+```
 
-Accepted replay records can be flat:
+### Replay / Simulate
+
+replay 模式读取历史 JSONL 行情事件，用同一套触发逻辑回放，不连接 OpenD。推荐在任何真实交易前先跑 replay。
+
+支持扁平格式：
 
 ```json
 {"symbol":"HK.01234","dark_status":"TRADING","best_bid":"12.60","best_ask":"12.70"}
 ```
 
-or OpenD-shaped:
+也支持 OpenD 形状：
 
 ```json
 {"symbol":"HK.01234","raw_quote":{"dark_status":"TRADING"},"raw_order_book":{"Ask":[["12.70",1000,1]],"Bid":[["12.60",500,1]],"svr_recv_time_ask":"2026-04-24 16:15:00.001"}}
 ```
 
-Run replay:
+运行：
 
 ```bash
 PYTHONPATH=src python -m futu_opend_execution.grey_open replay logs/grey_open_01234.jsonl HK.01234 \
@@ -296,14 +282,19 @@ PYTHONPATH=src python -m futu_opend_execution.grey_open replay logs/grey_open_01
 
 ### Real-run
 
-Real trading requires both safeguards:
+真实交易需要两个开关同时打开：
 
-- environment gate: `FUTU_ALLOW_REAL_TRADE=1`
-- CLI gate: `--real`
+- 环境开关：`FUTU_ALLOW_REAL_TRADE=1`
+- CLI 开关：`--real`
 
-The runner unlocks trade before the loop, installs best-effort order/deal push
-handlers, then submits normal day limit buy orders with `OrderType.NORMAL`,
-`TrdSide.BUY`, `TrdEnv.REAL`, and `TimeInForce.DAY`.
+真实模式会先解锁交易，安装尽力而为的订单/成交推送 handler，然后用以下参数提交港股普通限价买单：
+
+- `OrderType.NORMAL`
+- `TrdSide.BUY`
+- `TrdEnv.REAL`
+- `TimeInForce.DAY`
+
+示例：
 
 ```bash
 FUTU_ALLOW_REAL_TRADE=1 FUTU_TRADE_PASSWORD='...' \
@@ -319,19 +310,139 @@ PYTHONPATH=src python -m futu_opend_execution.grey_open live HK.01234 \
   --log-file logs/real_grey_open_01234.jsonl
 ```
 
-Create the kill-switch file from another terminal to stop new order generation:
+在另一个终端创建 kill-switch 文件即可阻止新的订单生成：
 
 ```bash
 touch /tmp/futu-grey-open.STOP
 ```
 
-Every run writes JSONL events including `quote_event`, `orderbook_event`,
-`trigger_event`, `order_request`, `order_response`, `order_push`, `fill_event`,
-and `error_event` where applicable.
+每次运行会写入 JSONL，包括：
 
-## Quick start
+- `quote_event`
+- `orderbook_event`
+- `trigger_event`
+- `order_request`
+- `order_response`
+- `order_push`
+- `fill_event`
+- `error_event`
 
-### 1. Create a virtual environment
+## Web UI 控制台
+
+CLI 对非工程师不够友好，所以仓库提供了本地 Web UI。它默认只监听 `127.0.0.1`，第一屏就是交易控制台：
+
+- 顶部：OpenD 状态、最近报价、事件数量
+- 左侧：正常交易
+- 右侧：暗盘抢单 dry-run 评估
+- 底部：JSONL 事件日志
+
+启动：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.web_app --port 8765
+```
+
+打开：
+
+```text
+http://127.0.0.1:8765
+```
+
+Web UI 当前支持：
+
+- 正常交易报价刷新
+- 自动读取 `lot_size`
+- 正常交易 `BUY` / `SELL`
+- `NORMAL` 限价单
+- `MARKET` 市价单
+- 手数 / 股数
+- `max_notional` 后端风控
+- dry-run / real 双模式
+- 实盘确认短语：`确认实盘`
+- 下单后轮询订单终态
+- 暗盘抢单 dry-run 评估
+- 全局 kill switch
+- 日志 tail
+
+Web UI 的安全边界：
+
+- 页面默认 dry-run
+- 实盘必须同时满足 `.env` 中 `FUTU_ALLOW_REAL_TRADE=1` 和页面切换到实盘
+- 实盘提交前必须输入 `确认实盘`
+- 后端会重新校验价格、数量、订单类型、`max_notional` 和 kill switch
+- 同一真实订单摘要 3 秒内重复点击会被后端拦截
+- 暗盘抢单 Web UI 当前只开放 dry-run 评估，实盘抢单先不在页面里自动发单
+
+## 正常交易下单
+
+`normal_trade` 是普通港股交易时段的 CLI。它会先读取：
+
+- 股票基础信息里的 `lot_size`
+- 实时报价
+- 一档买卖盘
+
+然后可以按手数或股数生成订单。默认仍然是 dry-run，不会真实下单。
+
+dry-run 示例：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.normal_trade HK.00700 \
+  --side BUY \
+  --order-type NORMAL \
+  --quantity-mode LOTS \
+  --lots 1 \
+  --limit-price 495 \
+  --max-notional 50000 \
+  --log-file logs/normal_trade_00700.jsonl
+```
+
+输出会包含类似：
+
+```text
+would_place_order code=HK.00700 side=BUY qty=100 lot_size=100 ...
+```
+
+真实提交需要 `.env` 中已配置：
+
+```env
+FUTU_ALLOW_REAL_TRADE=1
+FUTU_ACC_ID=你的真实账户ID
+FUTU_TRADE_PASSWORD=你的交易密码
+```
+
+并显式传入 `--real`：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.normal_trade HK.00700 \
+  --real \
+  --side BUY \
+  --order-type NORMAL \
+  --quantity-mode LOTS \
+  --lots 1 \
+  --limit-price 495 \
+  --max-notional 50000 \
+  --remark normal_one_lot_test \
+  --log-file logs/real_normal_trade_00700.jsonl
+```
+
+市价单示例：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.normal_trade HK.00068 \
+  --real \
+  --side BUY \
+  --order-type MARKET \
+  --quantity-mode LOTS \
+  --lots 1 \
+  --max-notional 20000 \
+  --remark normal_market_one_lot
+```
+
+注意：`--real` 会提交真实订单。市价单没有成交价上限，后端只用当前盘口估算 `max_notional` 风险金额。
+
+## 快速开始
+
+### 1. 创建虚拟环境
 
 ```bash
 python3 -m venv .venv
@@ -340,16 +451,22 @@ python -m pip install --upgrade pip setuptools wheel
 pip install -e .
 ```
 
-If your Python build does not bundle `setuptools` or `wheel`, install those
-packaging tools first before running the editable install.
+如需连接 OpenD：
 
-### 2. Configure environment
+```bash
+pip install -e '.[futu]'
+```
+
+### 2. 配置环境
 
 ```bash
 cp .env.example .env
+chmod 600 .env
 ```
 
-Default variables:
+`.env` 已被 `.gitignore` 忽略。不要把交易密码提交进 git。
+
+默认变量：
 
 ```env
 FUTU_HOST=127.0.0.1
@@ -369,50 +486,73 @@ FUTU_DEFAULT_ORDER_BOOK_DEPTH=10
 FUTU_GREY_MARKET_OPEN_STATES=AUCTION,MORNING,AFTERNOON,AFTER_HOURS_BEGIN,HK_CAS,NIGHT_OPEN
 ```
 
-### 3. Run local checks
+### 3. 加载本地 `.env`
 
 ```bash
-python -m pip install --upgrade pip setuptools wheel
-pip install -e .
+set -a
+source .env
+set +a
+```
+
+### 4. 运行本地检查
+
+```bash
 python -c "import futu_opend_execution; print('ok')"
 python -m unittest discover -s tests
 ```
 
-## Development notes
+## 实盘验证建议流程
 
-- Requires Python 3.11+
-- Assumes a local Futu OpenD instance is available when broker integration begins
-- Grey-market planning is currently snapshot-driven and simulation-first
-- The Futu broker adapter requires a logged-in OpenD instance plus the optional
-  `futu-api` package
-- The grey-open trigger defaults to dry-run and must be replay-tested before a
-  real session
-- When the SDK needs a writable HOME for its own log files, set
-  `FUTU_SDK_HOME_OVERRIDE` to a writable directory before importing `futu`
-- Real trading still requires explicit opt-in via `FUTU_ALLOW_REAL_TRADE=1`
-- The Futu path emulates `IOC` using `DAY` plus fast cancel
+目标是验证 API 能否真实接受暗盘或港股订单，不是抢成交。
+
+建议顺序：
+
+1. 确认 OpenD 正在监听 `127.0.0.1:11111`
+2. 查询账户列表，确认真实账户 `acc_id`
+3. 设置 `.env`，包括 `FUTU_ACC_ID` 和 `FUTU_TRADE_PASSWORD`
+4. 调用 `unlock_trade`
+5. 读取目标标的盘口
+6. 提交一笔远离盘口、极小数量、预期不成交的限价探针单
+7. 立刻撤单
+8. 查询订单最终状态和错误码
+9. 把所有结果写入 JSONL
+
+只有探针确认 `accepted -> cancel accepted -> terminal status` 后，才进入暗盘开盘 dry-run 和 real-run。
+
+## 开发说明
+
+- 需要 Python 3.11+
+- 连接 OpenD 时需要本机已登录 Futu OpenD
+- `futu-api` 是可选依赖，不安装也能跑计划器和测试
+- Futu SDK 默认会写 HOME 下的日志；沙箱或权限受限时设置 `FUTU_SDK_HOME_OVERRIDE`
+- `grey_open` 默认 dry-run，真实交易前必须 replay 测试
+- 真实交易必须显式设置 `FUTU_ALLOW_REAL_TRADE=1`
+- 当前 `IOC` 使用 `DAY` 单加快速撤单模拟
 
 ## Roadmap
 
-### Phase 1: scaffold
-- [x] create package skeleton
-- [x] publish repository
-- [x] add CI and basic docs
+### Phase 1: 项目骨架
 
-### Phase 2: simulated execution MVP
-- [x] config loader
-- [ ] connection health check
-- [x] execution request model
-- [x] visible-book simulation for grey-market buy planning
-- [x] structured logging
-- [x] grey-market order submitter wired to an OpenD adapter shape
+- [x] 创建 package skeleton
+- [x] 发布仓库
+- [x] 添加 CI 和基础文档
 
-### Phase 3: broker integration
-- [x] OpenD trading context wrapper
-- [x] order placement abstraction
-- [x] order status reconciliation
+### Phase 2: 模拟执行 MVP
+
+- [x] 配置加载器
+- [ ] 连接健康检查
+- [x] 执行请求模型
+- [x] 基于可见盘口的暗盘买入模拟
+- [x] 结构化日志
+- [x] OpenD 适配器形状
+
+### Phase 3: Broker 集成
+
+- [x] OpenD 交易上下文 wrapper
+- [x] 下单抽象
+- [x] 订单状态协调
 - [ ] retry / timeout / reconnect policy
-- [x] explicit real-trade guardrails
+- [x] 显式实盘风控
 
 ## License
 

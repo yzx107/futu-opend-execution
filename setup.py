@@ -7,6 +7,9 @@ setup(
     description="Hong Kong Futu/OpenD execution layer",
     package_dir={"": "src"},
     packages=find_packages(where="src"),
+    package_data={
+        "futu_opend_execution": ["web_static/*"],
+    },
     python_requires=">=3.11",
     extras_require={
         "futu": ["futu-api"],
