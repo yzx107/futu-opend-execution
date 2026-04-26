@@ -113,8 +113,16 @@ class CostReducerEngine:
         if not pulled_back:
             return None
 
-        max_sell_by_ratio = int(Decimal(inventory.current_position) * self._rules.max_sell_total_position_ratio)
+        net_trading_sold = inventory.trading_qty_sold - inventory.trading_qty_rebought
+        max_sell_by_ratio = int(
+            Decimal(inventory.total_target_qty) * self._rules.max_sell_total_position_ratio
+        )
+        remaining_sell_capacity = max_sell_by_ratio - net_trading_sold
+        if remaining_sell_capacity <= 0:
+            return CostReducerDecision(CostReducerAction.BLOCK, reason="max cumulative sell ratio reached")
+
         quantity = min(inventory.trading_available_to_sell, max_sell_by_ratio)
+        quantity = min(quantity, remaining_sell_capacity)
         if quantity <= 0:
             return CostReducerDecision(CostReducerAction.BLOCK, reason="sell quantity blocked by ratio")
 

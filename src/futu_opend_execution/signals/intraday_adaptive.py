@@ -26,11 +26,15 @@ class IntradayAdaptiveTracker:
     def __init__(self, *, window_size: int = 30) -> None:
         self._window_size = max(window_size, 5)
         self._prices: deque[Decimal] = deque(maxlen=self._window_size)
-        self._turnovers: deque[Decimal] = deque(maxlen=self._window_size)
+        self._rolling_vwap_inputs: deque[tuple[Decimal, Decimal]] = deque(
+            maxlen=self._window_size
+        )
         self._cum_turnover = Decimal("0")
         self._cum_notional = Decimal("0")
         self._cum_volume = Decimal("0")
         self._tick_count = 0
+        self.previous_volume: Decimal | None = None
+        self.previous_turnover: Decimal | None = None
 
     @staticmethod
     def _to_decimal(value) -> Decimal | None:
@@ -58,22 +62,41 @@ class IntradayAdaptiveTracker:
         if volume is None:
             volume = Decimal("0")
 
+        volume_delta = Decimal("0")
+        if self.previous_volume is not None:
+            raw_volume_delta = volume - self.previous_volume
+            if raw_volume_delta >= 0:
+                volume_delta = raw_volume_delta
+        self.previous_volume = volume
+
+        turnover_delta = Decimal("0")
+        if self.previous_turnover is not None:
+            raw_turnover_delta = turnover - self.previous_turnover
+            if raw_turnover_delta >= 0:
+                turnover_delta = raw_turnover_delta
+        self.previous_turnover = turnover
+
         if last_price is not None and last_price > 0:
             self._prices.append(last_price)
-            self._turnovers.append(turnover)
             self._tick_count += 1
-            self._cum_turnover += turnover
-            if volume > 0:
-                self._cum_notional += last_price * volume
-                self._cum_volume += volume
+            self._cum_turnover += turnover_delta
+            if volume_delta > 0:
+                self._cum_notional += turnover_delta
+                self._cum_volume += volume_delta
+                self._rolling_vwap_inputs.append((last_price, volume_delta))
 
         opening_vwap = None
         if self._cum_volume > 0:
             opening_vwap = self._cum_notional / self._cum_volume
 
         rolling_vwap = None
-        if self._prices:
-            rolling_vwap = sum(self._prices) / Decimal(len(self._prices))
+        if self._rolling_vwap_inputs:
+            rolling_volume = sum(item[1] for item in self._rolling_vwap_inputs)
+            if rolling_volume > 0:
+                rolling_notional = sum(
+                    price * volume for price, volume in self._rolling_vwap_inputs
+                )
+                rolling_vwap = rolling_notional / rolling_volume
 
         realized_vol = Decimal("0")
         if len(self._prices) >= 2:

@@ -31,12 +31,24 @@ class InventoryState:
     estimated_costs: Decimal = Decimal("0")
 
     @property
+    def total_target_qty(self) -> int:
+        return self.core_qty_target + self.trading_qty_target
+
+    @property
     def current_position(self) -> int:
-        return self.core_qty_filled + self.trading_qty_filled - self.trading_qty_sold
+        return (
+            self.core_qty_filled
+            + self.trading_qty_filled
+            - self.trading_qty_sold
+            + self.trading_qty_rebought
+        )
 
     @property
     def trading_available_to_sell(self) -> int:
-        return max(self.trading_qty_filled - self.trading_qty_sold, 0)
+        return max(
+            self.trading_qty_filled - self.trading_qty_sold + self.trading_qty_rebought,
+            0,
+        )
 
     @property
     def trading_available_to_rebuy(self) -> int:
