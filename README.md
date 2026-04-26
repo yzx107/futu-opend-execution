@@ -83,6 +83,29 @@
 - 策略逻辑和执行逻辑分离
 - `.env` 被 `.gitignore` 忽略，敏感信息不进入仓库
 
+### 执行模式层级
+
+新的灰度执行模式从低到高排列如下：
+
+- `REPLAY`：只读取 JSONL 历史行情，不连接 OpenD，不下单。
+- `PAPER`：保留给本地 paper-trading 工作流，不能触达真实账户。
+- `LIVE_DRY_RUN`：连接 OpenD 读取实时行情，只输出 `would_place_order` 和 JSONL。
+- `LIVE_REAL_BUY_ONLY`：只允许暗盘开盘买入路径，仍需 `FUTU_ALLOW_REAL_TRADE=1`、`--real`、kill-switch 未触发、`max_qty`、`max_notional` 和限频全部通过。
+- `LIVE_REAL_COST_REDUCER_MANUAL_APPROVAL`：成本优化器只生成卖出/回补意图，Web UI 必须逐笔手动确认，后端再次校验所有真实交易门禁。
+- `LIVE_REAL_COST_REDUCER_AUTO`：实验模式，默认配置禁用。即使 UI 勾选，也必须同时满足 `FUTU_ALLOW_REAL_TRADE=1`、确认短语、auto checkbox、kill-switch 未触发、订单次数/金额/仓位限制、重复 intent 锁和冷却时间。
+
+默认行为保持不变：CLI 和 Web UI 默认 dry-run；成本优化器默认只产生日志意图；真实卖出/回补默认需要手动审批，自动模式保持关闭。
+
+### Real-trade readiness status
+
+当前代码已经具备受控实盘测试的骨架：
+
+- 暗盘开盘买入可以在 `LIVE_REAL_BUY_ONLY` 下复用现有真实交易门禁。
+- 成本优化器可以生成 side-aware executable intent，但真实 sell/rebuy 被 Web 后端 guard 拦截，必须逐笔审批。
+- `RealOrderGuard` 对环境开关、确认短语、kill-switch、lot alignment、`max_qty`、`max_notional`、重复 `client_intent_id`、限频、交易库存和盘口状态 fail-closed。
+- `InventoryManager` / `FillLedger` 只用确认成交更新库存，重复成交回调会幂等忽略。
+- 自动成本优化器真实下单仍默认禁用，目标是 controlled testing，不是 unattended production trading。
+
 ## 目录结构
 
 ```text
@@ -299,6 +322,7 @@ PYTHONPATH=src python -m futu_opend_execution.harness 09868 1000 \
 - `cost_reducer_decision`
 - `trading_sell_intent`
 - `trading_rebuy_intent`
+- `cost_reducer_replay_summary`
 - `inventory_state`
 - `adaptive_market_state`
 
@@ -419,6 +443,22 @@ touch /tmp/futu-grey-open.STOP
 - `fill_event`
 - `error_event`
 
+### Config summary
+
+`grey_open` 支持在运行前打印安全配置摘要：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.grey_open replay logs/grey_open_01234.jsonl HK.01234 \
+  --quantity 1000 \
+  --max-price 12.80 \
+  --max-qty 1000 \
+  --max-notional 12800 \
+  --cost-reducer-dry-run \
+  --print-config
+```
+
+摘要会包含标的、数量、core/trading split、`max_price`、`max_notional`、real/dry-run 模式、成本优化器参数和安全门。
+
 ## Web UI 控制台
 
 CLI 对非工程师不够友好，所以仓库提供了本地 Web UI。它默认只监听 `127.0.0.1`，第一屏就是交易控制台：
@@ -453,6 +493,11 @@ Web UI 当前支持：
 - 实盘确认短语：`确认实盘`
 - 下单后轮询订单终态
 - 暗盘抢单 dry-run 评估
+- 暗盘 session 参数校验和 live dry-run 状态控制
+- 50/50 inventory seed/reset/reconcile
+- 成本优化器参数面板、preset 入口和 manual approval 控件
+- replay 入口和 replay summary 展示
+- 订单/成交/日志面板
 - 全局 kill switch
 - 日志 tail
 - `/api/health?active=1&symbol=00700` 主动探测 OpenD 报价链路
@@ -471,7 +516,51 @@ Web UI 的安全边界：
 - 实盘提交前必须输入 `确认实盘`
 - 后端会重新校验价格、数量、订单类型、`max_notional` 和 kill switch
 - 同一真实订单摘要 3 秒内重复点击会被后端拦截
-- 暗盘抢单 Web UI 当前只开放 dry-run 评估，实盘抢单先不在页面里自动发单
+- 成本优化器真实 sell/rebuy 必须走 `/api/cost-reducer/approve-intent`，后端会再次校验确认短语、ack checkbox、real mode、库存、盘口、spread、stale quote、重复 intent 和限频
+- 自动成本优化器真实执行默认关闭；缺少任一状态时后端记录 blocked event 并拒绝
+
+建议 Web UI 流程：
+
+1. 先用 replay 面板跑历史 JSONL，检查 `cost_reducer_replay_summary`。
+2. 再运行 live dry-run，确认 push/poll 行情、adaptive state、inventory state 和日志正常。
+3. 做 buy-only real probe，小数量、低 `max_notional`、低 `max_order_attempts`。
+4. 开启 manual cost reducer dry-run，只观察 SELL/REBUY intent。
+5. 逐笔核对日志、盘口、账户后，再手动 approve 一笔 sell/rebuy。
+
+安全 checklist：
+
+- OpenD 已登录且账户正确。
+- 只在真实测试窗口设置 `FUTU_ALLOW_REAL_TRADE=1`。
+- kill-switch 路径已知且可写。
+- `max_notional` 足够小。
+- `max_order_attempts` 足够低。
+- 不启用 auto cost reducer，除非显式允许实验配置。
+- JSONL 日志已保存并已 replay 复核。
+
+关键成本优化参数：
+
+- `max_spread_bps`：spread 超过该阈值时阻止 sell/rebuy。
+- `min_turnover_to_activate` / `min_ticks_to_activate`：成本优化器启动门槛。
+- `overextension_vol_multiple`：价格相对 anchor + vol 的超涨判定。
+- `high_pullback_vol_multiple`：从 rolling high 回落多少 vol 后允许 sell。
+- `rebuy_anchor_vol_band`：回补价格必须接近 anchor 的 vol band。
+- `estimated_roundtrip_cost_bps` / `safety_buffer_bps`：回补成本和安全缓冲。
+- `max_sell_total_position_ratio`：累计净卖出交易仓不能超过总目标仓位比例。
+- `max_round_trips`：交易仓 round trip 上限。
+- `sell_limit_offset_ticks` / `rebuy_limit_offset_ticks`：限价相对 best bid/ask 的 tick 偏移。
+- `max_sell_slippage_bps` / `max_rebuy_slippage_bps`：真实成本优化订单的滑点上限。
+
+JSONL 事件词汇：
+
+- `cost_reducer_decision`：成本优化器当前决策。
+- `trading_sell_intent` / `trading_rebuy_intent`：dry-run 交易仓卖出/回补意图。
+- `cost_reducer_replay_summary`：replay 结束汇总。
+- `real_order_intent`：真实订单意图已登记。
+- `real_order_request` / `real_order_response`：真实订单请求和券商响应。
+- `real_order_rejected` / `blocked_real_order`：真实订单被风控阻止。
+- `real_fill_applied`：确认成交已入账到库存。
+- `real_fill_duplicate_ignored`：重复成交回调被忽略。
+- `inventory_reconciled`：库存和 fill ledger 完成一次对账。
 
 ## 正常交易下单
 

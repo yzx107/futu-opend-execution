@@ -37,7 +37,14 @@ from futu_opend_execution.services.cost_reducer import (
     CostReducerState,
     apply_dry_run_fill,
 )
+from futu_opend_execution.services.real_order import (
+    GreyMarketRealOrderIntent,
+    GreyOrderRole,
+    GreyOrderSide,
+    GreyOrderSource,
+)
 from futu_opend_execution.signals.intraday_adaptive import IntradayAdaptiveTracker
+from futu_opend_execution.strategy_config import ExecutionMode
 
 
 FUTU_ORDER_LIMIT_WINDOW_SECONDS = 30.0
@@ -498,13 +505,26 @@ class FutuGreyMarketOpenDClient:
         )
 
     def place_real_limit_buy(self, intent: GreyMarketOrderIntent) -> dict[str, Any]:
+        return self.place_real_limit_order(
+            GreyMarketRealOrderIntent(
+                symbol=intent.symbol,
+                side=GreyOrderSide.BUY,
+                quantity=intent.quantity,
+                limit_price=intent.limit_price,
+                role=GreyOrderRole.CORE_BUY,
+                source=GreyOrderSource.OPEN_TRIGGER,
+                remark=intent.remark,
+            )
+        )
+
+    def place_real_limit_order(self, intent: GreyMarketRealOrderIntent) -> dict[str, Any]:
         self.unlock_trade()
         assert self._trade_context is not None
         ret, data = self._trade_context.place_order(
             price=float(intent.limit_price),
             qty=float(intent.quantity),
             code=intent.symbol,
-            trd_side=self._futu.TrdSide.BUY,
+            trd_side=self._resolve_order_side(intent.side),
             order_type=self._futu.OrderType.NORMAL,
             trd_env=self._futu.TrdEnv.REAL,
             acc_id=self._config.futu_acc_id,
@@ -515,6 +535,11 @@ class FutuGreyMarketOpenDClient:
         if ret != self._futu.RET_OK:
             raise BrokerResponseError(f"place_order failed: {data}")
         return _table_to_payload(data)
+
+    def _resolve_order_side(self, side: GreyOrderSide):
+        if side is GreyOrderSide.BUY:
+            return self._futu.TrdSide.BUY
+        return self._futu.TrdSide.SELL
 
     def close(self) -> None:
         if self._trade_context is not None:
@@ -1114,6 +1139,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    execution_mode = _resolve_execution_mode(args)
     rules = GreyMarketTriggerRules(
         symbol=args.symbol,
         quantity=args.quantity,
@@ -1130,36 +1156,17 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with JsonlEventLogger(args.log_file) as logger:
+            if args.print_config:
+                summary = _config_summary(args=args, rules=rules, execution_mode=execution_mode)
+                print(json.dumps(summary, ensure_ascii=True, default=_json_default, indent=2))
+                logger.log("grey_open_config_summary", **summary)
             if args.command == "replay":
                 submitted = run_replay(
                     input_path=args.input_path,
                     rules=rules,
                     logger=logger,
                     cost_reducer_dry_run=bool(getattr(args, "cost_reducer_dry_run", False)),
-                    core_ratio=Decimal(str(getattr(args, "core_ratio", "0.5"))),
-                    trading_ratio=Decimal(str(getattr(args, "trading_ratio", "0.5"))),
-                    estimated_roundtrip_cost_bps=Decimal(
-                        str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
-                    ),
-                    safety_buffer_bps=Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
-                    max_spread_bps=Decimal(str(getattr(args, "max_spread_bps", "20"))),
-                    min_turnover_to_activate=Decimal(
-                        str(getattr(args, "min_turnover_to_activate", "0"))
-                    ),
-                    min_ticks_to_activate=int(getattr(args, "min_ticks_to_activate", 5)),
-                    overextension_vol_multiple=Decimal(
-                        str(getattr(args, "overextension_vol_multiple", "2.0"))
-                    ),
-                    high_pullback_vol_multiple=Decimal(
-                        str(getattr(args, "high_pullback_vol_multiple", "0.5"))
-                    ),
-                    rebuy_anchor_vol_band=Decimal(
-                        str(getattr(args, "rebuy_anchor_vol_band", "1.0"))
-                    ),
-                    max_sell_total_position_ratio=Decimal(
-                        str(getattr(args, "max_sell_total_position_ratio", "0.25"))
-                    ),
-                    max_round_trips=int(getattr(args, "max_round_trips", 1)),
+                    **_cost_reducer_kwargs_from_args(args),
                 )
             else:
                 submitted = run_live(
@@ -1169,30 +1176,7 @@ def main(argv: list[str] | None = None) -> int:
                     timeout_seconds=args.timeout_seconds,
                     poll_interval_ms=args.poll_interval_ms,
                     cost_reducer_dry_run=bool(getattr(args, "cost_reducer_dry_run", False)),
-                    core_ratio=Decimal(str(getattr(args, "core_ratio", "0.5"))),
-                    trading_ratio=Decimal(str(getattr(args, "trading_ratio", "0.5"))),
-                    estimated_roundtrip_cost_bps=Decimal(
-                        str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
-                    ),
-                    safety_buffer_bps=Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
-                    max_spread_bps=Decimal(str(getattr(args, "max_spread_bps", "20"))),
-                    min_turnover_to_activate=Decimal(
-                        str(getattr(args, "min_turnover_to_activate", "0"))
-                    ),
-                    min_ticks_to_activate=int(getattr(args, "min_ticks_to_activate", 5)),
-                    overextension_vol_multiple=Decimal(
-                        str(getattr(args, "overextension_vol_multiple", "2.0"))
-                    ),
-                    high_pullback_vol_multiple=Decimal(
-                        str(getattr(args, "high_pullback_vol_multiple", "0.5"))
-                    ),
-                    rebuy_anchor_vol_band=Decimal(
-                        str(getattr(args, "rebuy_anchor_vol_band", "1.0"))
-                    ),
-                    max_sell_total_position_ratio=Decimal(
-                        str(getattr(args, "max_sell_total_position_ratio", "0.25"))
-                    ),
-                    max_round_trips=int(getattr(args, "max_round_trips", 1)),
+                    **_cost_reducer_kwargs_from_args(args),
                 )
     except Exception as exc:
         with JsonlEventLogger(args.log_file) as logger:
@@ -1271,6 +1255,94 @@ def _add_common_rule_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rebuy-anchor-vol-band", default="1.0")
     parser.add_argument("--max-sell-total-position-ratio", default="0.25")
     parser.add_argument("--max-round-trips", type=int, default=1)
+    parser.add_argument(
+        "--execution-mode",
+        choices=[mode.value for mode in ExecutionMode],
+        default=None,
+        help="Explicit execution mode. Defaults to REPLAY for replay, dry-run for live.",
+    )
+    parser.add_argument(
+        "--manual-approval-required",
+        action="store_true",
+        help="Require manual approval for real cost reducer sell/rebuy intents.",
+    )
+    parser.add_argument(
+        "--enable-auto-cost-reducer",
+        action="store_true",
+        help="Experimental flag only; auto real cost reducer remains disabled unless server config allows it.",
+    )
+    parser.add_argument(
+        "--print-config",
+        action="store_true",
+        help="Print a JSON dry-run/safety configuration summary before running.",
+    )
+
+
+def _cost_reducer_kwargs_from_args(args) -> dict[str, Any]:
+    return {
+        "core_ratio": Decimal(str(getattr(args, "core_ratio", "0.5"))),
+        "trading_ratio": Decimal(str(getattr(args, "trading_ratio", "0.5"))),
+        "estimated_roundtrip_cost_bps": Decimal(
+            str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
+        ),
+        "safety_buffer_bps": Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
+        "max_spread_bps": Decimal(str(getattr(args, "max_spread_bps", "20"))),
+        "min_turnover_to_activate": Decimal(
+            str(getattr(args, "min_turnover_to_activate", "0"))
+        ),
+        "min_ticks_to_activate": int(getattr(args, "min_ticks_to_activate", 5)),
+        "overextension_vol_multiple": Decimal(
+            str(getattr(args, "overextension_vol_multiple", "2.0"))
+        ),
+        "high_pullback_vol_multiple": Decimal(
+            str(getattr(args, "high_pullback_vol_multiple", "0.5"))
+        ),
+        "rebuy_anchor_vol_band": Decimal(
+            str(getattr(args, "rebuy_anchor_vol_band", "1.0"))
+        ),
+        "max_sell_total_position_ratio": Decimal(
+            str(getattr(args, "max_sell_total_position_ratio", "0.25"))
+        ),
+        "max_round_trips": int(getattr(args, "max_round_trips", 1)),
+    }
+
+
+def _resolve_execution_mode(args) -> ExecutionMode:
+    explicit = getattr(args, "execution_mode", None)
+    if explicit:
+        return ExecutionMode(explicit)
+    if args.command == "replay":
+        return ExecutionMode.REPLAY
+    if getattr(args, "real", False):
+        return ExecutionMode.LIVE_REAL_BUY_ONLY
+    return ExecutionMode.LIVE_DRY_RUN
+
+
+def _config_summary(*, args, rules: GreyMarketTriggerRules, execution_mode: ExecutionMode) -> dict[str, Any]:
+    kwargs = _cost_reducer_kwargs_from_args(args)
+    return {
+        "symbol": rules.symbol,
+        "quantity": rules.quantity,
+        "core_trading_split": {
+            "core_ratio": kwargs["core_ratio"],
+            "trading_ratio": kwargs["trading_ratio"],
+        },
+        "max_price": rules.max_price,
+        "max_qty": rules.max_qty,
+        "max_notional": rules.max_notional,
+        "execution_mode": execution_mode.value,
+        "real_order_requested": bool(getattr(args, "real", False)),
+        "cost_reducer_enabled": bool(getattr(args, "cost_reducer_dry_run", False)),
+        "cost_reducer_params": kwargs,
+        "safety_gates": {
+            "default_dry_run": True,
+            "kill_switch_file": rules.kill_switch_file,
+            "max_order_attempts": rules.max_order_attempts,
+            "cool_down_ms": rules.cool_down_ms,
+            "manual_approval_required": bool(getattr(args, "manual_approval_required", False)),
+            "enable_auto_cost_reducer": bool(getattr(args, "enable_auto_cost_reducer", False)),
+        },
+    }
 
 
 def _format_would_place_order(intent: GreyMarketOrderIntent, *, source: str) -> str:

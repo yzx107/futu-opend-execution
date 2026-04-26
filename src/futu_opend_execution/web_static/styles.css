@@ -78,7 +78,7 @@ p {
 
 .shell {
   display: grid;
-  grid-template-rows: auto minmax(360px, 1fr) 230px;
+  grid-template-rows: auto auto auto 260px;
   gap: 10px;
   min-height: 100vh;
   padding: 10px;
@@ -130,7 +130,7 @@ p {
 
 .status-strip {
   display: grid;
-  grid-template-columns: repeat(3, minmax(110px, 1fr)) auto;
+  grid-template-columns: repeat(5, minmax(95px, 1fr)) auto;
   align-items: stretch;
   gap: 8px;
   flex: 1;
@@ -165,6 +165,12 @@ p {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 10px;
   min-height: 0;
+}
+
+.console-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .panel,
@@ -216,6 +222,46 @@ label > span,
   gap: 10px;
 }
 
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.data-grid {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.9fr) minmax(0, 1.1fr);
+  gap: 6px 10px;
+  margin: 0 0 12px;
+}
+
+.data-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.data-grid dd {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.inline-check input {
+  width: 18px;
+  height: 18px;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -259,6 +305,30 @@ label > span,
   justify-content: space-between;
   gap: 10px;
   padding-top: 2px;
+}
+
+.button-pair.wrap {
+  flex-wrap: wrap;
+}
+
+pre {
+  min-height: 86px;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--input);
+  padding: 10px;
+  color: var(--text);
+}
+
+.mini-list {
+  min-height: 82px;
+  max-height: 180px;
+  overflow: auto;
+  margin: 8px 0 12px;
+  padding-left: 20px;
+  color: var(--muted);
 }
 
 .button-pair {

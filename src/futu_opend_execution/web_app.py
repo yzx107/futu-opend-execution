@@ -29,7 +29,9 @@ from futu_opend_execution.grey_open import (
     GreyMarketTriggerRules,
     JsonlEventLogger,
     log_signal,
+    run_replay,
 )
+from futu_opend_execution.inventory import split_inventory_targets
 from futu_opend_execution.normal_trade import (
     FutuNormalTradeClient,
     NormalOrderType,
@@ -39,6 +41,36 @@ from futu_opend_execution.normal_trade import (
     load_dotenv,
 )
 from futu_opend_execution.risk import ExecutionValidationError, validate_runtime_config
+from futu_opend_execution.services.cost_reducer import (
+    CostReducerAction,
+    CostReducerDecision,
+    CostReducerEngine,
+    CostReducerExecutionPolicy,
+    CostReducerRules,
+    CostReducerState,
+    build_executable_intent,
+)
+from futu_opend_execution.services.real_order import (
+    GreyMarketRealOrderIntent,
+    GreyOrderRole,
+    GreyOrderSide,
+    GreyOrderSource,
+    RealOrderGuard,
+)
+from futu_opend_execution.services.reconciliation import (
+    FillRecord,
+    InventoryManager,
+    PositionReconciler,
+)
+from futu_opend_execution.signals.intraday_adaptive import AdaptiveMarketState
+from futu_opend_execution.strategy_config import (
+    CostReducerRuntimeParams,
+    ExecutionMode,
+    WebUiRuntimeState,
+    config_to_jsonable,
+    cost_reducer_preset,
+    update_cost_reducer_params,
+)
 
 
 STATIC_ROOT = Path(__file__).with_name("web_static")
@@ -61,6 +93,15 @@ class WebState:
         self._lock = Lock()
         self._last_real_signature: str | None = None
         self._last_real_time = 0.0
+        self.ui_state = WebUiRuntimeState()
+        self.cost_reducer_params = CostReducerRuntimeParams()
+        self.inventory_manager: InventoryManager | None = None
+        self.pending_cost_reducer_intents: dict[str, dict[str, Any]] = {}
+        self.order_records: list[dict[str, Any]] = []
+        self.fill_records: list[dict[str, Any]] = []
+        self.replay_summary: dict[str, Any] | None = None
+        self.latest_market_state: dict[str, Any] | None = None
+        self.latest_decision: dict[str, Any] | None = None
 
     def check_duplicate_real_order(self, signature: str) -> None:
         now = time.monotonic()
@@ -110,6 +151,44 @@ def build_app_handler(state: WebState):
                     )
                 )
                 return
+            if parsed.path == "/api/state":
+                self._handle_json(lambda: api_state(state))
+                return
+            if parsed.path == "/api/cost-reducer/config":
+                self._handle_json(lambda: api_cost_reducer_config(state))
+                return
+            if parsed.path == "/api/inventory":
+                self._handle_json(lambda: api_inventory(state))
+                return
+            if parsed.path == "/api/orders":
+                self._handle_json(lambda: {"orders": state.order_records})
+                return
+            if parsed.path == "/api/fills":
+                self._handle_json(lambda: {"fills": state.fill_records})
+                return
+            if parsed.path == "/api/replay/summary":
+                self._handle_json(lambda: {"summary": state.replay_summary})
+                return
+            if parsed.path == "/api/logs/tail":
+                query = parse_qs(parsed.query)
+                self._handle_json(
+                    lambda: api_logs_tail(
+                        state,
+                        limit=int(_first_query_value(query, "limit", "80")),
+                    )
+                )
+                return
+            if parsed.path == "/api/logs/filter":
+                query = parse_qs(parsed.query)
+                self._handle_json(
+                    lambda: api_logs_filter(
+                        state,
+                        event_type=_first_query_value(query, "event", ""),
+                        text=_first_query_value(query, "text", ""),
+                        limit=int(_first_query_value(query, "limit", "200")),
+                    )
+                )
+                return
             self._serve_static(parsed.path)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -122,6 +201,57 @@ def build_app_handler(state: WebState):
                 return
             if parsed.path == "/api/kill-switch":
                 self._handle_json(lambda: api_kill_switch(state, self._read_json()))
+                return
+            if parsed.path == "/api/validate-config":
+                self._handle_json(lambda: api_validate_config(state, self._read_json()))
+                return
+            if parsed.path == "/api/subscribe":
+                self._handle_json(lambda: api_subscribe(state, self._read_json()))
+                return
+            if parsed.path == "/api/grey-open/dry-run":
+                self._handle_json(lambda: api_grey_evaluate(state, self._read_json()))
+                return
+            if parsed.path == "/api/grey-open/start-live-dry-run":
+                self._handle_json(lambda: api_start_live_dry_run(state, self._read_json()))
+                return
+            if parsed.path == "/api/grey-open/stop":
+                self._handle_json(lambda: api_stop_live_run(state))
+                return
+            if parsed.path == "/api/kill-switch/create":
+                self._handle_json(lambda: api_kill_switch(state, {"enabled": True}))
+                return
+            if parsed.path == "/api/kill-switch/clear":
+                self._handle_json(lambda: api_kill_switch(state, {"enabled": False}))
+                return
+            if parsed.path == "/api/cost-reducer/config":
+                self._handle_json(lambda: api_update_cost_reducer_config(state, self._read_json()))
+                return
+            if parsed.path == "/api/cost-reducer/evaluate":
+                self._handle_json(lambda: api_cost_reducer_evaluate(state, self._read_json()))
+                return
+            if parsed.path == "/api/cost-reducer/approve-intent":
+                self._handle_json(lambda: api_approve_cost_reducer_intent(state, self._read_json()))
+                return
+            if parsed.path == "/api/cost-reducer/reject-intent":
+                self._handle_json(lambda: api_mark_cost_reducer_intent(state, self._read_json(), "REJECTED"))
+                return
+            if parsed.path == "/api/cost-reducer/expire-intent":
+                self._handle_json(lambda: api_mark_cost_reducer_intent(state, self._read_json(), "EXPIRED"))
+                return
+            if parsed.path == "/api/inventory/seed-dry-run":
+                self._handle_json(lambda: api_inventory_seed_dry_run(state, self._read_json()))
+                return
+            if parsed.path == "/api/inventory/reset":
+                self._handle_json(lambda: api_inventory_reset(state))
+                return
+            if parsed.path == "/api/inventory/reconcile":
+                self._handle_json(lambda: api_inventory_reconcile(state))
+                return
+            if parsed.path == "/api/orders/cancel":
+                self._handle_json(lambda: api_order_cancel(state, self._read_json()))
+                return
+            if parsed.path == "/api/replay/run":
+                self._handle_json(lambda: api_replay_run(state, self._read_json()))
                 return
             self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -257,6 +387,310 @@ def api_quote(state: WebState, *, symbol: str) -> dict[str, Any]:
     payload = _quote_to_payload(quote)
     _log_event(state, "web_quote", quote=payload)
     return {"quote": payload}
+
+
+def api_state(state: WebState) -> dict[str, Any]:
+    return {
+        "ui_state": config_to_jsonable(state.ui_state),
+        "cost_reducer_config": config_to_jsonable(state.cost_reducer_params),
+        "inventory": _inventory_payload(state),
+        "pending_cost_reducer_intents": list(state.pending_cost_reducer_intents.values()),
+        "orders": state.order_records[-50:],
+        "fills": state.fill_records[-50:],
+        "latest_market_state": state.latest_market_state,
+        "latest_decision": state.latest_decision,
+        "kill_switch": state.kill_switch_file.exists(),
+        "allow_real_trade": state.config.allow_real_trade,
+        "log_file": str(state.log_file),
+    }
+
+
+def api_validate_config(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    rules = _rules_from_payload(state, payload)
+    validate_runtime_config(state.config)
+    return {
+        "valid": True,
+        "rules": _dataclass_to_payload(rules),
+        "cost_reducer_config": config_to_jsonable(state.cost_reducer_params),
+        "safety": {
+            "default_dry_run": True,
+            "allow_real_trade": state.config.allow_real_trade,
+            "kill_switch": state.kill_switch_file.exists(),
+            "kill_switch_file": str(state.kill_switch_file),
+        },
+    }
+
+
+def api_subscribe(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    symbol = _required_str(payload, "symbol")
+    active = _truthy(payload.get("active", False))
+    if active:
+        with FutuGreyMarketOpenDClient(state.config) as client:
+            client.subscribe_market(symbol)
+    state.ui_state.active_symbol = _normalize_symbol(symbol)
+    _log_event(state, "web_subscribe", symbol=state.ui_state.active_symbol, active=active)
+    return {"subscribed": active, "symbol": state.ui_state.active_symbol}
+
+
+def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    _rules_from_payload(state, payload)
+    state.ui_state.execution_mode = ExecutionMode.LIVE_DRY_RUN
+    state.ui_state.live_running = True
+    _log_event(state, "web_live_dry_run_started", payload=payload)
+    return {"running": True, "execution_mode": state.ui_state.execution_mode.value}
+
+
+def api_stop_live_run(state: WebState) -> dict[str, Any]:
+    state.ui_state.live_running = False
+    _log_event(state, "web_live_run_stopped")
+    return {"running": False}
+
+
+def api_cost_reducer_config(state: WebState) -> dict[str, Any]:
+    return {"config": config_to_jsonable(state.cost_reducer_params)}
+
+
+def api_update_cost_reducer_config(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    preset = payload.get("preset")
+    if preset:
+        state.cost_reducer_params = cost_reducer_preset(str(preset))
+    else:
+        state.cost_reducer_params = update_cost_reducer_params(
+            state.cost_reducer_params,
+            payload,
+        )
+    _log_event(
+        state,
+        "web_cost_reducer_config_updated",
+        config=config_to_jsonable(state.cost_reducer_params),
+    )
+    return {"config": config_to_jsonable(state.cost_reducer_params)}
+
+
+def api_inventory(state: WebState) -> dict[str, Any]:
+    return {"inventory": _inventory_payload(state)}
+
+
+def api_inventory_seed_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    total_quantity = _required_int(payload, "target_quantity")
+    lot_size = _required_int(payload, "lot_size")
+    anchor_price = _required_str(payload, "anchor_price")
+    inventory = split_inventory_targets(
+        total_quantity=total_quantity,
+        lot_size=lot_size,
+        core_ratio=payload.get("core_ratio", state.cost_reducer_params.core_ratio),
+        trading_ratio=payload.get("trading_ratio", state.cost_reducer_params.trading_ratio),
+    )
+    inventory.seed_opening_inventory(anchor_price=anchor_price)
+    state.inventory_manager = InventoryManager(inventory)
+    _log_event(state, "web_inventory_seeded", inventory=state.inventory_manager.snapshot())
+    return {"inventory": state.inventory_manager.snapshot()}
+
+
+def api_inventory_reset(state: WebState) -> dict[str, Any]:
+    state.inventory_manager = None
+    state.pending_cost_reducer_intents.clear()
+    _log_event(state, "web_inventory_reset")
+    return {"inventory": None}
+
+
+def api_inventory_reconcile(state: WebState) -> dict[str, Any]:
+    if state.inventory_manager is None:
+        raise ExecutionValidationError("inventory has not been seeded.")
+    payload = PositionReconciler().reconcile(state.inventory_manager)
+    _log_event(state, payload["event"], **payload)
+    return payload
+
+
+def api_cost_reducer_evaluate(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    manager = state.inventory_manager
+    if manager is None:
+        raise ExecutionValidationError("inventory must be seeded before cost reducer evaluation.")
+    market = _market_from_payload(payload)
+    params = state.cost_reducer_params
+    rules = _cost_rules_from_params(params)
+    reducer_state = CostReducerState(
+        round_trips_completed=int(payload.get("round_trips_completed") or 0),
+        last_sell_price=(
+            Decimal(str(payload["last_sell_price"]))
+            if payload.get("last_sell_price") not in {None, ""}
+            else None
+        ),
+    )
+    decision = CostReducerEngine(rules).evaluate(
+        inventory=manager.inventory,
+        market=market,
+        state=reducer_state,
+    )
+    executable = build_executable_intent(
+        decision=decision,
+        market=market,
+        inventory=manager.inventory,
+        rules=rules,
+        policy=_execution_policy_from_params(params),
+        best_bid=payload.get("best_bid"),
+        best_ask=payload.get("best_ask"),
+    )
+    intent_payload = _dataclass_to_payload(executable)
+    if decision.action in {CostReducerAction.SELL_TRADING, CostReducerAction.REBUY_TRADING}:
+        intent_id = f"cr-{int(time.time() * 1000)}"
+        intent_payload["intent_id"] = intent_id
+        intent_payload["created_at"] = datetime.now(UTC).isoformat()
+        state.pending_cost_reducer_intents[intent_id] = intent_payload
+    state.latest_market_state = _dataclass_to_payload(market)
+    state.latest_decision = {
+        "decision": _dataclass_to_payload(decision),
+        "executable_intent": intent_payload,
+    }
+    _log_event(state, "web_cost_reducer_evaluate", **state.latest_decision)
+    return state.latest_decision
+
+
+def api_approve_cost_reducer_intent(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    intent_id = _required_str(payload, "intent_id")
+    pending = state.pending_cost_reducer_intents.get(intent_id)
+    if pending is None:
+        raise ExecutionValidationError("pending intent not found.")
+    if not _truthy(payload.get("acknowledge_real_order", False)):
+        raise ExecutionValidationError("real order acknowledgement checkbox is required.")
+    if not _truthy(payload.get("real_mode", False)):
+        raise ExecutionValidationError("real mode must be toggled before approval.")
+    if state.inventory_manager is None:
+        raise ExecutionValidationError("inventory is required before approval.")
+
+    side = pending.get("side")
+    role = pending.get("role")
+    if not side or not role or not pending.get("limit_price"):
+        raise ExecutionValidationError("intent is not executable.")
+    real_intent = GreyMarketRealOrderIntent(
+        symbol=str(payload.get("symbol") or state.ui_state.active_symbol),
+        side=side,
+        quantity=int(pending["quantity"]),
+        limit_price=pending["limit_price"],
+        role=role,
+        source=GreyOrderSource.COST_REDUCER,
+        remark=str(payload.get("remark") or "web_cost_reducer_manual"),
+        client_intent_id=intent_id,
+    )
+    guard = RealOrderGuard(
+        runtime_config=state.config,
+        kill_switch_file=state.kill_switch_file,
+        max_qty=int(payload.get("max_qty") or real_intent.quantity),
+        max_notional=Decimal(str(payload.get("max_notional") or real_intent.notional)),
+        lot_size=int(payload.get("lot_size") or 1),
+        max_order_attempts=int(payload.get("max_order_attempts") or 1),
+        experimental_auto_enabled=False,
+    )
+    market_snapshot = dict(pending.get("market_snapshot") or {})
+    market_snapshot.setdefault("spread_bps", market_snapshot.get("spread_bps", "0"))
+    market_snapshot.setdefault(
+        "max_spread_bps",
+        str(state.cost_reducer_params.max_spread_bps),
+    )
+    market_snapshot.setdefault("best_bid", payload.get("best_bid"))
+    market_snapshot.setdefault("best_ask", payload.get("best_ask"))
+    guard.validate(
+        real_intent,
+        execution_mode=ExecutionMode.LIVE_REAL_COST_REDUCER_MANUAL_APPROVAL,
+        inventory=state.inventory_manager.inventory,
+        market_snapshot=market_snapshot,
+        confirm_text=str(payload.get("confirm_text") or ""),
+        approved=True,
+        now_monotonic=time.monotonic(),
+    )
+    if not _truthy(payload.get("submit_real", False)):
+        pending["status"] = "PENDING_APPROVAL"
+        _log_event(state, "blocked_real_order", reason="submit_real flag not set", intent=real_intent)
+        raise ExecutionValidationError("submit_real flag must be true to place a real order.")
+
+    with FutuGreyMarketOpenDClient(state.config) as client:
+        response = client.place_real_limit_order(real_intent)
+    record = {
+        "event": "real_order_response",
+        "intent_id": intent_id,
+        "intent": _dataclass_to_payload(real_intent),
+        "response": response,
+    }
+    state.order_records.append(record)
+    pending["status"] = "EXECUTED"
+    _log_event(state, "real_order_response", **record)
+    return {"submitted": True, "intent": _dataclass_to_payload(real_intent), "response": response}
+
+
+def api_mark_cost_reducer_intent(
+    state: WebState,
+    payload: dict[str, Any],
+    status: str,
+) -> dict[str, Any]:
+    intent_id = _required_str(payload, "intent_id")
+    pending = state.pending_cost_reducer_intents.get(intent_id)
+    if pending is None:
+        raise ExecutionValidationError("pending intent not found.")
+    pending["status"] = status
+    _log_event(state, "web_cost_reducer_intent_status", intent_id=intent_id, status=status)
+    return {"intent": pending}
+
+
+def api_order_cancel(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    order_id = _required_str(payload, "order_id")
+    if state.inventory_manager is not None:
+        event = state.inventory_manager.mark_cancelled(order_id)
+    else:
+        event = {"event": "real_order_cancel_request", "order_id": order_id}
+    state.order_records.append(event)
+    _log_event(state, event["event"], **event)
+    return event
+
+
+def api_replay_run(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    input_path = Path(_required_str(payload, "input_path"))
+    output_log = Path(str(payload.get("output_log_path") or state.log_file))
+    rules = _rules_from_payload(state, payload)
+    with JsonlEventLogger(output_log) as logger:
+        submitted = run_replay(
+            input_path=input_path,
+            rules=rules,
+            logger=logger,
+            stdout=_NullWriter(),
+            cost_reducer_dry_run=_truthy(payload.get("cost_reducer_dry_run", True)),
+            core_ratio=state.cost_reducer_params.core_ratio,
+            trading_ratio=state.cost_reducer_params.trading_ratio,
+            estimated_roundtrip_cost_bps=state.cost_reducer_params.estimated_roundtrip_cost_bps,
+            safety_buffer_bps=state.cost_reducer_params.safety_buffer_bps,
+            max_spread_bps=state.cost_reducer_params.max_spread_bps,
+            min_turnover_to_activate=state.cost_reducer_params.min_turnover_to_activate,
+            min_ticks_to_activate=state.cost_reducer_params.min_ticks_to_activate,
+            overextension_vol_multiple=state.cost_reducer_params.overextension_vol_multiple,
+            high_pullback_vol_multiple=state.cost_reducer_params.high_pullback_vol_multiple,
+            rebuy_anchor_vol_band=state.cost_reducer_params.rebuy_anchor_vol_band,
+            max_sell_total_position_ratio=state.cost_reducer_params.max_sell_total_position_ratio,
+            max_round_trips=state.cost_reducer_params.max_round_trips,
+        )
+    summary = _latest_event(output_log, "cost_reducer_replay_summary")
+    state.replay_summary = summary
+    _log_event(state, "web_replay_run", submitted=submitted, summary=summary)
+    return {"submitted_or_would_submit": submitted, "summary": summary, "output_log_path": str(output_log)}
+
+
+def api_logs_tail(state: WebState, *, limit: int = 80) -> dict[str, Any]:
+    limit = max(min(limit, 500), 1)
+    return {"events": _read_jsonl_tail(state.log_file, limit)}
+
+
+def api_logs_filter(
+    state: WebState,
+    *,
+    event_type: str = "",
+    text: str = "",
+    limit: int = 200,
+) -> dict[str, Any]:
+    events = _read_jsonl_tail(state.log_file, max(min(limit, 1000), 1))
+    if event_type:
+        events = [event for event in events if event.get("event") == event_type]
+    if text:
+        needle = text.lower()
+        events = [event for event in events if needle in json.dumps(event, ensure_ascii=False).lower()]
+    return {"events": events}
 
 
 def api_normal_order(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
@@ -413,6 +847,112 @@ def api_events(state: WebState, *, limit: int = 80) -> dict[str, Any]:
     return {"events": events[-limit:]}
 
 
+def _rules_from_payload(state: WebState, payload: dict[str, Any]) -> GreyMarketTriggerRules:
+    symbol = _required_str(payload, "symbol")
+    quantity = _required_int(payload, "quantity")
+    max_price = _required_str(payload, "max_price")
+    max_notional = _required_str(payload, "max_notional")
+    max_qty = int(payload.get("max_qty") or quantity)
+    return GreyMarketTriggerRules(
+        symbol=symbol,
+        quantity=quantity,
+        max_price=max_price,
+        max_qty=max_qty,
+        max_notional=max_notional,
+        max_order_attempts=int(payload.get("max_order_attempts") or 3),
+        cool_down_ms=int(payload.get("cool_down_ms") or 300),
+        opening_burst_seconds=float(payload.get("opening_burst_seconds") or 0),
+        opening_burst_cool_down_ms=int(payload.get("opening_burst_cool_down_ms") or 50),
+        kill_switch_file=state.kill_switch_file,
+        remark=str(payload.get("remark") or "web_grey_open"),
+    )
+
+
+def _cost_rules_from_params(params: CostReducerRuntimeParams) -> CostReducerRules:
+    return CostReducerRules(
+        core_ratio=params.core_ratio,
+        trading_ratio=params.trading_ratio,
+        overextension_vol_multiple=params.overextension_vol_multiple,
+        high_pullback_vol_multiple=params.high_pullback_vol_multiple,
+        rebuy_anchor_vol_band=params.rebuy_anchor_vol_band,
+        max_sell_total_position_ratio=params.max_sell_total_position_ratio,
+        max_round_trips=params.max_round_trips,
+        min_turnover_to_activate=params.min_turnover_to_activate,
+        min_ticks_to_activate=params.min_ticks_to_activate,
+        max_spread_bps=params.max_spread_bps,
+        estimated_roundtrip_cost_bps=params.estimated_roundtrip_cost_bps,
+        safety_buffer_bps=params.safety_buffer_bps,
+    )
+
+
+def _execution_policy_from_params(params: CostReducerRuntimeParams) -> CostReducerExecutionPolicy:
+    return CostReducerExecutionPolicy(
+        dry_run_only=params.dry_run_only,
+        manual_approval_required=params.manual_approval_required,
+        enable_real_sell=params.enable_real_sell,
+        enable_real_rebuy=params.enable_real_rebuy,
+        enable_auto_cost_reducer=params.enable_auto_cost_reducer,
+        max_real_sell_qty=params.max_real_sell_qty,
+        max_real_rebuy_qty=params.max_real_rebuy_qty,
+        max_real_sell_notional=params.max_real_sell_notional,
+        max_real_rebuy_notional=params.max_real_rebuy_notional,
+        max_cost_reducer_orders_per_session=params.max_cost_reducer_orders_per_session,
+        min_seconds_between_cost_reducer_orders=params.min_seconds_between_cost_reducer_orders,
+        require_positive_expected_edge=params.require_positive_expected_edge,
+        sell_limit_offset_ticks=params.sell_limit_offset_ticks,
+        rebuy_limit_offset_ticks=params.rebuy_limit_offset_ticks,
+        min_sell_price=params.min_sell_price,
+        max_rebuy_price=params.max_rebuy_price,
+        max_sell_slippage_bps=params.max_sell_slippage_bps,
+        max_rebuy_slippage_bps=params.max_rebuy_slippage_bps,
+        min_expected_edge_bps=params.min_expected_edge_bps,
+    )
+
+
+def _market_from_payload(payload: dict[str, Any]) -> AdaptiveMarketState:
+    return AdaptiveMarketState(
+        opening_vwap=_optional_decimal(payload.get("opening_vwap")),
+        rolling_vwap=_optional_decimal(payload.get("rolling_vwap")),
+        realized_vol=_optional_decimal(payload.get("realized_vol")) or Decimal("0"),
+        rolling_high=_optional_decimal(payload.get("rolling_high")),
+        rolling_low=_optional_decimal(payload.get("rolling_low")),
+        cumulative_turnover=_optional_decimal(payload.get("cumulative_turnover")) or Decimal("0"),
+        volume_delta=_optional_decimal(payload.get("volume_delta")) or Decimal("0"),
+        turnover_delta=_optional_decimal(payload.get("turnover_delta")) or Decimal("0"),
+        cumulative_field_reset_detected=_truthy(payload.get("cumulative_field_reset_detected", False)),
+        tick_count=int(payload.get("tick_count") or 0),
+        orderbook_imbalance=_optional_decimal(payload.get("orderbook_imbalance")) or Decimal("0"),
+        spread_bps=_optional_decimal(payload.get("spread_bps")) or Decimal("0"),
+        last_price=_optional_decimal(payload.get("last_price")),
+    )
+
+
+def _inventory_payload(state: WebState) -> dict[str, Any] | None:
+    if state.inventory_manager is None:
+        return None
+    return state.inventory_manager.snapshot()
+
+
+def _latest_event(path: Path, event_type: str) -> dict[str, Any] | None:
+    events = _read_jsonl_tail(path, 1000)
+    for event in reversed(events):
+        if event.get("event") == event_type:
+            return event
+    return None
+
+
+def _normalize_symbol(symbol: str) -> str:
+    normalized = symbol.strip().upper()
+    if "." in normalized:
+        return normalized
+    return f"HK.{normalized}"
+
+
+class _NullWriter:
+    def write(self, value: str) -> int:
+        return len(value)
+
+
 def run_server(*, host: str, port: int, state: WebState) -> None:
     handler = build_app_handler(state)
     server = ThreadingHTTPServer((host, port), handler)
@@ -545,6 +1085,12 @@ def _optional_int(value: Any) -> int | None:
     if parsed <= 0:
         raise ExecutionValidationError("数量必须为正数。")
     return parsed
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    if value in {None, ""}:
+        return None
+    return Decimal(str(value))
 
 
 def _first_query_value(

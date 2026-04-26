@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,10 +11,17 @@ from futu_opend_execution.normal_trade import NormalTradeQuote
 from futu_opend_execution.risk import ExecutionValidationError
 from futu_opend_execution.web_app import (
     REAL_CONFIRM_TEXT,
+    STATIC_ROOT,
     WebState,
+    api_approve_cost_reducer_intent,
+    api_cost_reducer_config,
+    api_inventory_seed_dry_run,
     api_health,
+    api_kill_switch,
     api_normal_order,
     api_quote,
+    api_replay_run,
+    api_update_cost_reducer_config,
 )
 
 
@@ -214,6 +222,184 @@ class WebAppTests(unittest.TestCase):
 
         self.assertTrue(first["submitted"])
         self.assertEqual(FakeNormalTradeClient.place_count, 1)
+
+    def test_cost_reducer_config_endpoint_accepts_spread_and_vol_params(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            payload = api_update_cost_reducer_config(
+                state,
+                {
+                    "max_spread_bps": "100",
+                    "overextension_vol_multiple": "1.5",
+                    "high_pullback_vol_multiple": "0.25",
+                },
+            )
+
+        self.assertEqual(payload["config"]["max_spread_bps"], "100")
+        self.assertEqual(payload["config"]["overextension_vol_multiple"], "1.5")
+        self.assertEqual(api_cost_reducer_config(state)["config"]["high_pullback_vol_multiple"], "0.25")
+
+    def test_cost_reducer_config_endpoint_validates_numeric_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            with self.assertRaises(ValueError):
+                api_update_cost_reducer_config(state, {"max_sell_total_position_ratio": "2"})
+
+    def test_approve_endpoint_rejects_without_real_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir, allow_real_trade=False)
+            api_inventory_seed_dry_run(
+                state,
+                {
+                    "target_quantity": 1000,
+                    "lot_size": 100,
+                    "anchor_price": "10",
+                },
+            )
+            state.pending_cost_reducer_intents["i1"] = {
+                "side": "SELL",
+                "role": "TRADING_SELL",
+                "quantity": 100,
+                "limit_price": "10",
+                "market_snapshot": {"spread_bps": "1", "max_spread_bps": "20", "best_bid": "10"},
+            }
+            with self.assertRaises(ExecutionValidationError):
+                api_approve_cost_reducer_intent(
+                    state,
+                    {
+                        "intent_id": "i1",
+                        "real_mode": True,
+                        "acknowledge_real_order": True,
+                        "confirm_text": REAL_CONFIRM_TEXT,
+                        "max_notional": "20000",
+                        "lot_size": 100,
+                        "best_bid": "10",
+                    },
+                )
+
+    def test_approve_endpoint_rejects_without_confirmation_phrase(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir, allow_real_trade=True)
+            api_inventory_seed_dry_run(
+                state,
+                {
+                    "target_quantity": 1000,
+                    "lot_size": 100,
+                    "anchor_price": "10",
+                },
+            )
+            state.pending_cost_reducer_intents["i1"] = {
+                "side": "SELL",
+                "role": "TRADING_SELL",
+                "quantity": 100,
+                "limit_price": "10",
+                "market_snapshot": {"spread_bps": "1", "max_spread_bps": "20", "best_bid": "10"},
+            }
+            with self.assertRaises(ExecutionValidationError):
+                api_approve_cost_reducer_intent(
+                    state,
+                    {
+                        "intent_id": "i1",
+                        "real_mode": True,
+                        "acknowledge_real_order": True,
+                        "confirm_text": "wrong",
+                        "max_notional": "20000",
+                        "lot_size": 100,
+                        "best_bid": "10",
+                    },
+                )
+
+    def test_replay_endpoint_emits_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            replay_path = temp_path / "events.jsonl"
+            replay_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "symbol": "HK.01234",
+                                "dark_status": "TRADING",
+                                "best_bid": "10.00",
+                                "best_ask": "10.02",
+                                "raw_quote": {
+                                    "dark_status": "TRADING",
+                                    "last_price": "10.01",
+                                    "turnover": "10000",
+                                    "volume": "1000",
+                                    "lot_size": 100,
+                                },
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "symbol": "HK.01234",
+                                "dark_status": "TRADING",
+                                "best_bid": "10.10",
+                                "best_ask": "10.12",
+                                "raw_quote": {
+                                    "dark_status": "TRADING",
+                                    "last_price": "10.11",
+                                    "turnover": "12020",
+                                    "volume": "1200",
+                                    "lot_size": 100,
+                                },
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            state = make_state(temp_dir)
+            result = api_replay_run(
+                state,
+                {
+                    "input_path": str(replay_path),
+                    "output_log_path": str(temp_path / "replay.jsonl"),
+                    "symbol": "HK.01234",
+                    "quantity": 1000,
+                    "max_price": "12.80",
+                    "max_qty": 1000,
+                    "max_notional": "12800",
+                    "cost_reducer_dry_run": True,
+                },
+            )
+
+        self.assertIsNotNone(result["summary"])
+        self.assertEqual(result["summary"]["event"], "cost_reducer_replay_summary")
+
+    def test_kill_switch_endpoint_blocks_order_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            api_kill_switch(state, {"enabled": True})
+            with self.assertRaises(ExecutionValidationError):
+                api_normal_order(
+                    state,
+                    {
+                        "symbol": "00700",
+                        "side": "BUY",
+                        "order_type": "NORMAL",
+                        "quantity_mode": "LOTS",
+                        "lots": 1,
+                        "limit_price": "495",
+                        "max_notional": "50000",
+                        "real": False,
+                    },
+                )
+
+    def test_web_ui_smoke_contains_real_trade_console_sections(self) -> None:
+        html = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+        for token in (
+            "costReducerSection",
+            "inventorySection",
+            "ordersFillsSection",
+            "costReducerConfirmText",
+            "realModeStatus",
+            "maxSpreadBps",
+            "replaySection",
+        ):
+            self.assertIn(token, html)
 
 
 if __name__ == "__main__":

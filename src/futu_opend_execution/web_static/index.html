@@ -22,6 +22,14 @@
             <strong id="healthStatus">--</strong>
           </div>
           <div class="metric">
+            <span>实盘</span>
+            <strong id="realModeStatus">默认关闭</strong>
+          </div>
+          <div class="metric">
+            <span>Kill</span>
+            <strong id="killStatus">--</strong>
+          </div>
+          <div class="metric">
             <span>最近报价</span>
             <strong id="lastQuote">--</strong>
           </div>
@@ -174,10 +182,205 @@
         </section>
       </main>
 
+      <section class="console-grid" aria-label="暗盘成本优化控制台">
+        <section class="panel setup-panel" aria-labelledby="sessionSetupTitle">
+          <div class="panel-head compact">
+            <h2 id="sessionSetupTitle">Session Setup</h2>
+          </div>
+          <div class="trade-form">
+            <div class="grid-3">
+              <label><span>symbol</span><input id="setupSymbol" name="symbol" value="HK.01234"></label>
+              <label><span>target quantity</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
+              <label><span>lot size</span><input id="setupLotSize" name="lot_size" type="number" value="100"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>max price</span><input id="setupMaxPrice" name="max_price" type="number" step="0.001"></label>
+              <label><span>max qty</span><input id="setupMaxQty" name="max_qty" type="number" value="1000"></label>
+              <label><span>max notional</span><input id="setupMaxNotional" name="max_notional" type="number" step="0.01"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>max order attempts</span><input id="setupMaxOrderAttempts" name="max_order_attempts" type="number" value="3"></label>
+              <label><span>cool down ms</span><input id="setupCoolDownMs" name="cool_down_ms" type="number" value="300"></label>
+              <label><span>remark</span><input id="setupRemark" name="remark" value="web_grey_open"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>opening burst seconds</span><input id="setupOpeningBurstSeconds" name="opening_burst_seconds" type="number" step="0.1" value="0"></label>
+              <label><span>opening burst cool down ms</span><input id="setupOpeningBurstCoolDownMs" name="opening_burst_cool_down_ms" type="number" value="50"></label>
+              <label><span>kill switch path</span><input id="setupKillSwitchPath" name="kill_switch_path" value="/tmp/futu-opend-execution.KILL"></label>
+            </div>
+            <div class="button-pair wrap">
+              <button class="secondary-button" id="validateConfigBtn" type="button">Validate config</button>
+              <button class="secondary-button" id="subscribeBtn" type="button">Subscribe market</button>
+              <button class="secondary-button" id="dryRunOpenTriggerBtn" type="button">Dry-run open trigger</button>
+              <button class="primary-button" id="startLiveDryRunBtn" type="button">Start live dry-run</button>
+              <button class="small-button" id="stopLiveRunBtn" type="button">Stop live run</button>
+              <button class="danger-button small" id="createKillSwitchBtn" type="button">Create kill switch</button>
+              <button class="small-button" id="clearKillSwitchBtn" type="button">Clear kill switch</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel inventory-panel" id="inventorySection" aria-labelledby="inventoryTitle">
+          <div class="panel-head compact">
+            <h2 id="inventoryTitle">50/50 Inventory</h2>
+          </div>
+          <div class="grid-3">
+            <label><span>core ratio</span><input id="inventoryCoreRatio" value="0.5"></label>
+            <label><span>trading ratio</span><input id="inventoryTradingRatio" value="0.5"></label>
+            <label><span>anchor price</span><input id="inventoryAnchorPrice" type="number" step="0.001"></label>
+          </div>
+          <dl class="data-grid" id="inventorySnapshot">
+            <dt>core target</dt><dd id="coreTarget">--</dd>
+            <dt>trading target</dt><dd id="tradingTarget">--</dd>
+            <dt>core filled</dt><dd id="coreFilled">--</dd>
+            <dt>trading filled</dt><dd id="tradingFilled">--</dd>
+            <dt>trading sold</dt><dd id="tradingSold">--</dd>
+            <dt>trading rebought</dt><dd id="tradingRebought">--</dd>
+            <dt>current position</dt><dd id="currentPosition">--</dd>
+            <dt>economic cost basis</dt><dd id="economicCostBasis">--</dd>
+            <dt>realized trading P&L</dt><dd id="realizedTradingPnl">--</dd>
+          </dl>
+          <div class="button-pair wrap">
+            <button class="secondary-button" id="seedInventoryBtn" type="button">Seed dry-run inventory</button>
+            <button class="small-button" id="resetInventoryBtn" type="button">Reset dry-run inventory</button>
+            <button class="secondary-button" id="reconcileInventoryBtn" type="button">Reconcile from fills</button>
+            <button class="small-button" id="exportInventoryBtn" type="button">Export inventory snapshot</button>
+          </div>
+        </section>
+
+        <section class="panel cost-panel" id="costReducerSection" aria-labelledby="costReducerTitle">
+          <div class="panel-head compact">
+            <h2 id="costReducerTitle">Cost Reducer Parameters</h2>
+          </div>
+          <form id="costReducerConfigForm" class="trade-form">
+            <div class="grid-3">
+              <label class="inline-check"><input id="costReducerEnabled" name="cost_reducer_enabled" type="checkbox"> cost_reducer_enabled</label>
+              <label class="inline-check"><input id="dryRunOnly" name="dry_run_only" type="checkbox" checked> dry_run_only</label>
+              <label class="inline-check"><input id="manualApprovalRequired" name="manual_approval_required" type="checkbox" checked> manual_approval_required</label>
+            </div>
+            <div class="grid-3">
+              <label><span>max_spread_bps</span><input id="maxSpreadBps" name="max_spread_bps" value="20"></label>
+              <label><span>min_turnover_to_activate</span><input id="minTurnoverToActivate" name="min_turnover_to_activate" value="0"></label>
+              <label><span>min_ticks_to_activate</span><input id="minTicksToActivate" name="min_ticks_to_activate" type="number" value="5"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>overextension_vol_multiple</span><input id="overextensionVolMultiple" name="overextension_vol_multiple" value="2.0"></label>
+              <label><span>high_pullback_vol_multiple</span><input id="highPullbackVolMultiple" name="high_pullback_vol_multiple" value="0.5"></label>
+              <label><span>rebuy_anchor_vol_band</span><input id="rebuyAnchorVolBand" name="rebuy_anchor_vol_band" value="1.0"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>estimated_roundtrip_cost_bps</span><input id="estimatedRoundtripCostBps" name="estimated_roundtrip_cost_bps" value="10"></label>
+              <label><span>safety_buffer_bps</span><input id="safetyBufferBps" name="safety_buffer_bps" value="5"></label>
+              <label><span>max_sell_total_position_ratio</span><input id="maxSellTotalPositionRatio" name="max_sell_total_position_ratio" value="0.25"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>max_round_trips</span><input id="maxRoundTrips" name="max_round_trips" type="number" value="1"></label>
+              <label><span>max_cost_reducer_orders_per_session</span><input id="maxCostReducerOrdersPerSession" name="max_cost_reducer_orders_per_session" type="number" value="1"></label>
+              <label><span>min_seconds_between_cost_reducer_orders</span><input id="minSecondsBetweenCostReducerOrders" name="min_seconds_between_cost_reducer_orders" value="5"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>sell_limit_offset_ticks</span><input id="sellLimitOffsetTicks" name="sell_limit_offset_ticks" type="number" value="0"></label>
+              <label><span>rebuy_limit_offset_ticks</span><input id="rebuyLimitOffsetTicks" name="rebuy_limit_offset_ticks" type="number" value="0"></label>
+              <label><span>min_expected_edge_bps</span><input id="minExpectedEdgeBps" name="min_expected_edge_bps" value="0"></label>
+            </div>
+            <div class="grid-3">
+              <label><span>max_sell_slippage_bps</span><input id="maxSellSlippageBps" name="max_sell_slippage_bps" value="20"></label>
+              <label><span>max_rebuy_slippage_bps</span><input id="maxRebuySlippageBps" name="max_rebuy_slippage_bps" value="20"></label>
+              <label class="inline-check"><input id="enableAutoCostReducer" name="enable_auto_cost_reducer" type="checkbox"> enable_auto_cost_reducer</label>
+            </div>
+            <div class="button-pair wrap">
+              <button class="primary-button" id="applyCostParamsBtn" type="submit">Apply parameters</button>
+              <button class="small-button" id="savePresetBtn" type="button">Save preset</button>
+              <button class="small-button" id="loadPresetBtn" type="button">Load preset</button>
+              <button class="secondary-button" id="conservativePresetBtn" type="button">Reset to conservative defaults</button>
+              <button class="secondary-button" id="aggressivePresetBtn" type="button">Reset to aggressive dry-run defaults</button>
+            </div>
+          </form>
+        </section>
+
+        <section class="panel market-panel" id="liveMarketSection" aria-labelledby="marketTitle">
+          <div class="panel-head compact"><h2 id="marketTitle">Live Market</h2></div>
+          <dl class="data-grid">
+            <dt>best bid</dt><dd id="marketBestBid">--</dd>
+            <dt>bid size</dt><dd id="marketBidSize">--</dd>
+            <dt>best ask</dt><dd id="marketBestAsk">--</dd>
+            <dt>ask size</dt><dd id="marketAskSize">--</dd>
+            <dt>spread bps</dt><dd id="marketSpreadBps">--</dd>
+            <dt>last price</dt><dd id="marketLastPrice">--</dd>
+            <dt>opening VWAP</dt><dd id="marketOpeningVwap">--</dd>
+            <dt>rolling VWAP</dt><dd id="marketRollingVwap">--</dd>
+            <dt>realized vol</dt><dd id="marketRealizedVol">--</dd>
+            <dt>rolling high</dt><dd id="marketRollingHigh">--</dd>
+            <dt>rolling low</dt><dd id="marketRollingLow">--</dd>
+            <dt>orderbook imbalance</dt><dd id="marketImbalance">--</dd>
+            <dt>cumulative turnover</dt><dd id="marketCumulativeTurnover">--</dd>
+            <dt>volume delta</dt><dd id="marketVolumeDelta">--</dd>
+            <dt>turnover delta</dt><dd id="marketTurnoverDelta">--</dd>
+            <dt>cumulative_field_reset_detected</dt><dd id="marketResetDetected">--</dd>
+            <dt>tick count</dt><dd id="marketTickCount">--</dd>
+          </dl>
+        </section>
+
+        <section class="panel decision-panel" id="costReducerDecisionSection" aria-labelledby="decisionTitle">
+          <div class="panel-head compact"><h2 id="decisionTitle">Cost Reducer Decision</h2></div>
+          <dl class="data-grid">
+            <dt>action</dt><dd id="decisionAction">--</dd>
+            <dt>reason</dt><dd id="decisionReason">--</dd>
+            <dt>proposed side</dt><dd id="decisionSide">--</dd>
+            <dt>proposed quantity</dt><dd id="decisionQuantity">--</dd>
+            <dt>proposed limit price</dt><dd id="decisionLimitPrice">--</dd>
+            <dt>expected edge bps</dt><dd id="decisionExpectedEdge">--</dd>
+            <dt>estimated costs</dt><dd id="decisionCosts">--</dd>
+            <dt>inventory constraints</dt><dd id="decisionInventoryConstraints">--</dd>
+            <dt>market constraints</dt><dd id="decisionMarketConstraints">--</dd>
+            <dt>blocked reason</dt><dd id="decisionBlockedReason">--</dd>
+            <dt>timestamp</dt><dd id="decisionTimestamp">--</dd>
+          </dl>
+          <label class="confirm-field"><span>real confirmation phrase</span><input id="costReducerConfirmText" placeholder="输入：确认实盘"></label>
+          <label class="inline-check"><input id="ackRealCostReducer" type="checkbox"> acknowledge this may submit real orders</label>
+          <div class="button-pair wrap">
+            <button class="danger-button small" id="approveIntentBtn" type="button">Approve once</button>
+            <button class="small-button" id="rejectIntentBtn" type="button">Reject intent</button>
+            <button class="small-button" id="expireIntentBtn" type="button">Expire intent</button>
+          </div>
+        </section>
+
+        <section class="panel orders-panel" id="ordersFillsSection" aria-labelledby="ordersTitle">
+          <div class="panel-head compact"><h2 id="ordersTitle">Orders and Fills</h2></div>
+          <div class="grid-2">
+            <div><h2>Open Orders</h2><ol id="openOrders" class="mini-list"></ol></div>
+            <div><h2>Fill Ledger</h2><ol id="fillLedger" class="mini-list"></ol></div>
+          </div>
+          <div class="grid-3">
+            <label><span>order id</span><input id="cancelOrderId"></label>
+            <button class="small-button" id="cancelOrderBtn" type="button">Cancel active order</button>
+            <span id="orderTimeline">--</span>
+          </div>
+        </section>
+
+        <section class="panel replay-panel" id="replaySection" aria-labelledby="replayTitle">
+          <div class="panel-head compact"><h2 id="replayTitle">Replay</h2></div>
+          <form id="replayForm" class="trade-form">
+            <div class="grid-2">
+              <label><span>JSONL path</span><input id="replayInputPath" name="input_path" value="logs/grey_open_01234.jsonl"></label>
+              <label><span>output log path</span><input id="replayOutputPath" name="output_log_path" value="logs/replay_cost_reducer_01234.jsonl"></label>
+            </div>
+            <button class="primary-button" id="runReplayBtn" type="submit">Replay with current parameters</button>
+          </form>
+          <pre id="replaySummary">{}</pre>
+          <button class="small-button" id="exportReplaySummaryBtn" type="button">Export replay summary JSON</button>
+        </section>
+      </section>
+
       <section class="event-panel" aria-labelledby="eventsTitle">
         <div class="panel-head compact">
           <h2 id="eventsTitle">事件日志</h2>
-          <button class="small-button" id="eventsRefreshBtn" type="button">刷新日志</button>
+          <div class="button-pair">
+            <input id="logFilterText" placeholder="search text">
+            <button class="small-button" id="eventsRefreshBtn" type="button">刷新日志</button>
+            <button class="small-button" id="downloadLogBtn" type="button">Download/export log</button>
+            <button class="small-button" id="copyLatestErrorBtn" type="button">Copy latest error</button>
+          </div>
         </div>
         <ol id="eventLog" class="event-log" aria-live="polite"></ol>
       </section>

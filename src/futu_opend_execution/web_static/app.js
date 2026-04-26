@@ -29,6 +29,21 @@ const els = {
   killSwitchBtn: $("#killSwitchBtn"),
   eventsRefreshBtn: $("#eventsRefreshBtn"),
   eventLog: $("#eventLog"),
+  realModeStatus: $("#realModeStatus"),
+  killStatus: $("#killStatus"),
+  validateConfigBtn: $("#validateConfigBtn"),
+  subscribeBtn: $("#subscribeBtn"),
+  dryRunOpenTriggerBtn: $("#dryRunOpenTriggerBtn"),
+  startLiveDryRunBtn: $("#startLiveDryRunBtn"),
+  stopLiveRunBtn: $("#stopLiveRunBtn"),
+  createKillSwitchBtn: $("#createKillSwitchBtn"),
+  clearKillSwitchBtn: $("#clearKillSwitchBtn"),
+  seedInventoryBtn: $("#seedInventoryBtn"),
+  resetInventoryBtn: $("#resetInventoryBtn"),
+  reconcileInventoryBtn: $("#reconcileInventoryBtn"),
+  costReducerConfigForm: $("#costReducerConfigForm"),
+  replayForm: $("#replayForm"),
+  replaySummary: $("#replaySummary"),
 };
 
 function nowTime() {
@@ -152,13 +167,50 @@ function normalPayload() {
 
 function greyPayload() {
   return {
-    symbol: $("#greySymbol").value.trim(),
-    max_price: numberOrNull($("#greyMaxPrice").value),
-    quantity: numberOrNull($("#greyQuantity").value),
-    max_notional: numberOrNull($("#greyMaxNotional").value),
-    max_order_attempts: numberOrNull($("#greyMaxAttempts").value),
-    cool_down_ms: numberOrNull($("#greyCoolDown").value),
+    symbol: ($("#setupSymbol")?.value || $("#greySymbol").value).trim(),
+    max_price: numberOrNull($("#setupMaxPrice")?.value || $("#greyMaxPrice").value),
+    quantity: numberOrNull($("#setupQuantity")?.value || $("#greyQuantity").value),
+    max_qty: numberOrNull($("#setupMaxQty")?.value),
+    max_notional: numberOrNull($("#setupMaxNotional")?.value || $("#greyMaxNotional").value),
+    max_order_attempts: numberOrNull($("#setupMaxOrderAttempts")?.value || $("#greyMaxAttempts").value),
+    cool_down_ms: numberOrNull($("#setupCoolDownMs")?.value || $("#greyCoolDown").value),
+    opening_burst_seconds: numberOrNull($("#setupOpeningBurstSeconds")?.value),
+    opening_burst_cool_down_ms: numberOrNull($("#setupOpeningBurstCoolDownMs")?.value),
+    remark: $("#setupRemark")?.value || "web_grey_open",
     real: !els.greyDryRun.checked,
+  };
+}
+
+function inventorySeedPayload() {
+  return {
+    target_quantity: numberOrNull($("#setupQuantity")?.value || $("#greyQuantity").value),
+    lot_size: numberOrNull($("#setupLotSize")?.value),
+    anchor_price: numberOrNull($("#inventoryAnchorPrice")?.value || $("#setupMaxPrice")?.value),
+    core_ratio: $("#inventoryCoreRatio")?.value || "0.5",
+    trading_ratio: $("#inventoryTradingRatio")?.value || "0.5",
+  };
+}
+
+function costReducerConfigPayload() {
+  const form = els.costReducerConfigForm;
+  const data = new FormData(form);
+  const payload = {};
+  for (const [key, value] of data.entries()) {
+    payload[key] = value;
+  }
+  ["cost_reducer_enabled", "dry_run_only", "manual_approval_required", "enable_auto_cost_reducer"].forEach((key) => {
+    const input = form.querySelector(`[name="${key}"]`);
+    if (input) payload[key] = input.checked;
+  });
+  return payload;
+}
+
+function replayPayload() {
+  return {
+    ...greyPayload(),
+    input_path: $("#replayInputPath")?.value,
+    output_log_path: $("#replayOutputPath")?.value,
+    cost_reducer_dry_run: true,
   };
 }
 
@@ -189,12 +241,83 @@ async function loadHealth() {
     els.healthStatus.textContent = String(status);
     els.healthStatus.className = "is-ok";
     els.statusText.textContent = "本地服务在线";
+    if (els.realModeStatus) els.realModeStatus.textContent = data?.allow_real_trade ? "允许" : "关闭";
+    if (els.killStatus) els.killStatus.textContent = data?.kill_switch ? "已触发" : "未触发";
   } catch (error) {
     els.healthStatus.textContent = "异常";
     els.healthStatus.className = "is-warn";
     els.statusText.textContent = "本地服务不可用";
     addLocalEvent("health", error.message, "error");
   }
+}
+
+async function validateConfig() {
+  const data = await requestJson("/api/validate-config", {
+    method: "POST",
+    body: JSON.stringify(greyPayload()),
+  });
+  addLocalEvent("config", `配置有效 ${data?.rules?.symbol || ""}`, "ok");
+}
+
+async function subscribeMarket() {
+  const data = await requestJson("/api/subscribe", {
+    method: "POST",
+    body: JSON.stringify({ symbol: greyPayload().symbol, active: false }),
+  });
+  addLocalEvent("subscribe", `已记录订阅标的 ${data.symbol}`, "ok");
+}
+
+async function startLiveDryRun() {
+  const data = await requestJson("/api/grey-open/start-live-dry-run", {
+    method: "POST",
+    body: JSON.stringify(greyPayload()),
+  });
+  addLocalEvent("live", `live dry-run ${data.running ? "started" : "stopped"}`, "warn");
+}
+
+async function stopLiveRun() {
+  const data = await requestJson("/api/grey-open/stop", { method: "POST", body: "{}" });
+  addLocalEvent("live", `live run stopped=${!data.running}`, "ok");
+}
+
+async function seedInventory() {
+  const data = await requestJson("/api/inventory/seed-dry-run", {
+    method: "POST",
+    body: JSON.stringify(inventorySeedPayload()),
+  });
+  addLocalEvent("inventory", `seeded position=${data?.inventory?.current_position}`, "ok");
+}
+
+async function resetInventory() {
+  await requestJson("/api/inventory/reset", { method: "POST", body: "{}" });
+  addLocalEvent("inventory", "inventory reset", "ok");
+}
+
+async function reconcileInventory() {
+  const data = await requestJson("/api/inventory/reconcile", { method: "POST", body: "{}" });
+  addLocalEvent("inventory", `reconciled fills=${data.fill_count}`, "ok");
+}
+
+async function applyCostReducerConfig(event) {
+  event.preventDefault();
+  const data = await requestJson("/api/cost-reducer/config", {
+    method: "POST",
+    body: JSON.stringify(costReducerConfigPayload()),
+  });
+  addLocalEvent("cost", `params applied max_spread=${data?.config?.max_spread_bps}`, "ok");
+}
+
+async function runReplay(event) {
+  event.preventDefault();
+  const data = await requestJson("/api/replay/run", {
+    method: "POST",
+    body: JSON.stringify(replayPayload()),
+  });
+  if (els.replaySummary) {
+    els.replaySummary.textContent = JSON.stringify(data.summary || {}, null, 2);
+  }
+  addLocalEvent("replay", `replay done submitted=${data.submitted_or_would_submit}`, "ok");
+  refreshEvents();
 }
 
 async function refreshQuote(symbol, target) {
@@ -324,6 +447,18 @@ els.normalQuoteBtn.addEventListener("click", async () => {
 });
 els.greyArmBtn.addEventListener("click", toggleArm);
 els.killSwitchBtn.addEventListener("click", killSwitch);
+els.validateConfigBtn?.addEventListener("click", () => validateConfig().catch((error) => addLocalEvent("config", error.message, "error")));
+els.subscribeBtn?.addEventListener("click", () => subscribeMarket().catch((error) => addLocalEvent("subscribe", error.message, "error")));
+els.dryRunOpenTriggerBtn?.addEventListener("click", () => evaluateGrey(new Event("submit")));
+els.startLiveDryRunBtn?.addEventListener("click", () => startLiveDryRun().catch((error) => addLocalEvent("live", error.message, "error")));
+els.stopLiveRunBtn?.addEventListener("click", () => stopLiveRun().catch((error) => addLocalEvent("live", error.message, "error")));
+els.createKillSwitchBtn?.addEventListener("click", () => requestJson("/api/kill-switch/create", { method: "POST", body: "{}" }).then(loadHealth).catch((error) => addLocalEvent("kill", error.message, "error")));
+els.clearKillSwitchBtn?.addEventListener("click", () => requestJson("/api/kill-switch/clear", { method: "POST", body: "{}" }).then(loadHealth).catch((error) => addLocalEvent("kill", error.message, "error")));
+els.seedInventoryBtn?.addEventListener("click", () => seedInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
+els.resetInventoryBtn?.addEventListener("click", () => resetInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
+els.reconcileInventoryBtn?.addEventListener("click", () => reconcileInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
+els.costReducerConfigForm?.addEventListener("submit", applyCostReducerConfig);
+els.replayForm?.addEventListener("submit", runReplay);
 els.eventsRefreshBtn.addEventListener("click", refreshEvents);
 els.refreshAllBtn.addEventListener("click", refreshAll);
 els.normalDryRun.addEventListener("change", syncModes);

@@ -7,9 +7,13 @@ from futu_opend_execution.inventory import split_inventory_targets
 from futu_opend_execution.services.cost_reducer import (
     CostReducerAction,
     CostReducerEngine,
+    CostReducerExecutableStatus,
+    CostReducerExecutionPolicy,
     CostReducerRules,
     CostReducerState,
+    build_executable_intent,
 )
+from futu_opend_execution.services.real_order import GreyOrderRole, GreyOrderSide
 from futu_opend_execution.signals.intraday_adaptive import AdaptiveMarketState
 
 
@@ -219,6 +223,82 @@ class CostReducerTests(unittest.TestCase):
             state=state,
         )
         self.assertEqual(recovered.action, CostReducerAction.REBUY_TRADING)
+
+    def test_sell_decision_creates_sell_trading_executable_intent(self) -> None:
+        inventory = split_inventory_targets(total_quantity=1000, lot_size=100)
+        inventory.seed_opening_inventory(anchor_price="10")
+        rules = CostReducerRules(min_ticks_to_activate=1)
+        decision = CostReducerDecisionLike(CostReducerAction.SELL_TRADING, 100, "sell")
+
+        intent = build_executable_intent(
+            decision=decision,
+            market=self._market(last_price=Decimal("10.5")),
+            inventory=inventory,
+            rules=rules,
+            policy=CostReducerExecutionPolicy(
+                dry_run_only=False,
+                require_positive_expected_edge=False,
+                sell_limit_offset_ticks=1,
+                max_sell_slippage_bps=Decimal("100"),
+            ),
+            best_bid=Decimal("10.48"),
+            best_ask=Decimal("10.50"),
+        )
+
+        self.assertEqual(intent.side, GreyOrderSide.SELL)
+        self.assertEqual(intent.role, GreyOrderRole.TRADING_SELL)
+        self.assertEqual(intent.limit_price, Decimal("10.47"))
+        self.assertEqual(intent.status, CostReducerExecutableStatus.PENDING_APPROVAL)
+
+    def test_rebuy_decision_creates_buy_rebuy_executable_intent(self) -> None:
+        inventory = split_inventory_targets(total_quantity=1000, lot_size=100)
+        inventory.seed_opening_inventory(anchor_price="10")
+        inventory.record_trading_sell(quantity=100, price="10.5")
+        rules = CostReducerRules(min_ticks_to_activate=1)
+        decision = CostReducerDecisionLike(CostReducerAction.REBUY_TRADING, 100, "rebuy")
+
+        intent = build_executable_intent(
+            decision=decision,
+            market=self._market(last_price=Decimal("10.1"), orderbook_imbalance=Decimal("0.3")),
+            inventory=inventory,
+            rules=rules,
+            policy=CostReducerExecutionPolicy(
+                dry_run_only=False,
+                require_positive_expected_edge=False,
+                rebuy_limit_offset_ticks=1,
+            ),
+            best_bid=Decimal("10.09"),
+            best_ask=Decimal("10.10"),
+        )
+
+        self.assertEqual(intent.side, GreyOrderSide.BUY)
+        self.assertEqual(intent.role, GreyOrderRole.TRADING_REBUY)
+        self.assertLessEqual(intent.limit_price, Decimal("10.11"))
+        self.assertIsNone(getattr(intent, "order_type", None))
+
+    def test_dry_run_policy_blocks_real_execution_before_approval(self) -> None:
+        inventory = split_inventory_targets(total_quantity=1000, lot_size=100)
+        inventory.seed_opening_inventory(anchor_price="10")
+
+        intent = build_executable_intent(
+            decision=CostReducerDecisionLike(CostReducerAction.SELL_TRADING, 100, "sell"),
+            market=self._market(last_price=Decimal("10.5")),
+            inventory=inventory,
+            rules=CostReducerRules(min_ticks_to_activate=1),
+            policy=CostReducerExecutionPolicy(dry_run_only=True),
+            best_bid=Decimal("10.48"),
+            best_ask=Decimal("10.50"),
+        )
+
+        self.assertEqual(intent.status, CostReducerExecutableStatus.BLOCKED)
+        self.assertFalse(intent.approved)
+
+
+class CostReducerDecisionLike:
+    def __init__(self, action, quantity, reason) -> None:
+        self.action = action
+        self.quantity = quantity
+        self.reason = reason
 
 
 if __name__ == "__main__":
