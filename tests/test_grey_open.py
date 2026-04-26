@@ -313,6 +313,8 @@ class GreyMarketReplayTests(unittest.TestCase):
         captured_rules = []
 
         class FakeCostReducerEngine:
+            def __init__(self, *args, **kwargs): pass
+
             def __init__(self, rules) -> None:
                 captured_rules.append(rules)
 
