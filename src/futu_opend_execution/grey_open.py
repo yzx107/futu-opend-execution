@@ -12,21 +12,32 @@ import json
 import sys
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
-from enum import StrEnum
+from futu_opend_execution._compat import StrEnum
 from pathlib import Path
+from threading import Lock
 from time import monotonic as _monotonic
 from time import sleep as _sleep
 from typing import Any, Iterable, TextIO
 
+from futu_opend_execution._compat import UTC
 from futu_opend_execution.config import RuntimeConfig
+from futu_opend_execution.inventory import split_inventory_targets
 from futu_opend_execution.execution.broker import (
     BrokerConfigurationError,
     BrokerResponseError,
 )
 from futu_opend_execution.execution.futu_runtime import load_futu_module
 from futu_opend_execution.risk import ExecutionValidationError, validate_runtime_config
+from futu_opend_execution.services.cost_reducer import (
+    CostReducerAction,
+    CostReducerEngine,
+    CostReducerRules,
+    CostReducerState,
+    apply_dry_run_fill,
+)
+from futu_opend_execution.signals.intraday_adaptive import IntradayAdaptiveTracker
 
 
 FUTU_ORDER_LIMIT_WINDOW_SECONDS = 30.0
@@ -135,6 +146,8 @@ class GreyMarketTriggerRules:
     max_notional: Decimal
     max_order_attempts: int = 3
     cool_down_ms: int = 300
+    opening_burst_seconds: float = 0.0
+    opening_burst_cool_down_ms: int = 50
     kill_switch_file: Path | None = None
     remark: str = "grey_open_v1"
 
@@ -172,6 +185,14 @@ class GreyMarketTriggerRules:
             )
         if self.cool_down_ms < 0:
             raise ExecutionValidationError("cool_down_ms must be zero or greater.")
+        if self.opening_burst_seconds < 0:
+            raise ExecutionValidationError(
+                "opening_burst_seconds must be zero or greater."
+            )
+        if self.opening_burst_cool_down_ms < 0:
+            raise ExecutionValidationError(
+                "opening_burst_cool_down_ms must be zero or greater."
+            )
 
 
 class GreyMarketOpenTrigger:
@@ -181,6 +202,7 @@ class GreyMarketOpenTrigger:
         self._rules = rules
         self._attempts = 0
         self._order_times: deque[float] = deque()
+        self._first_trading_seen_at: float | None = None
 
     @property
     def attempts(self) -> int:
@@ -197,6 +219,9 @@ class GreyMarketOpenTrigger:
                 action=TriggerAction.WAIT,
                 reason=f"symbol mismatch: expected {self._rules.symbol}, got {signal.symbol}",
             )
+
+        if signal.dark_status == "TRADING" and self._first_trading_seen_at is None:
+            self._first_trading_seen_at = now_monotonic
 
         if self._rules.kill_switch_file and self._rules.kill_switch_file.exists():
             return GreyMarketTriggerDecision(
@@ -219,7 +244,7 @@ class GreyMarketOpenTrigger:
 
         if self._order_times:
             elapsed = now_monotonic - self._order_times[-1]
-            if elapsed < self._minimum_interval_seconds:
+            if elapsed < self._minimum_interval_seconds(now_monotonic):
                 return GreyMarketTriggerDecision(
                     action=TriggerAction.WAIT,
                     reason="cool_down_ms/minimum order interval not elapsed",
@@ -268,9 +293,18 @@ class GreyMarketOpenTrigger:
         self._order_times.append(now_monotonic)
         self._prune_order_times(now_monotonic)
 
-    @property
-    def _minimum_interval_seconds(self) -> float:
-        return max(self._rules.cool_down_ms / 1000.0, SAFE_MIN_ORDER_INTERVAL_SECONDS)
+    def _minimum_interval_seconds(self, now_monotonic: float) -> float:
+        in_opening_burst = (
+            self._first_trading_seen_at is not None
+            and now_monotonic - self._first_trading_seen_at
+            <= self._rules.opening_burst_seconds
+        )
+        configured_cool_down_ms = (
+            self._rules.opening_burst_cool_down_ms
+            if in_opening_burst
+            else self._rules.cool_down_ms
+        )
+        return max(configured_cool_down_ms / 1000.0, SAFE_MIN_ORDER_INTERVAL_SECONDS)
 
     def _prune_order_times(self, now_monotonic: float) -> None:
         while (
@@ -327,6 +361,13 @@ class FutuGreyMarketOpenDClient:
         )
         self._trade_context = None
         self._trade_unlocked = False
+        self._subscribed_symbol: str | None = None
+        self._push_lock = Lock()
+        self._push_handlers_enabled = False
+        self._push_quotes_by_symbol: dict[str, dict[str, Any]] = {}
+        self._push_books_by_symbol: dict[str, dict[str, Any]] = {}
+        self._push_sequence = 0
+        self._last_consumed_push_sequence = 0
 
     def __enter__(self) -> "FutuGreyMarketOpenDClient":
         return self
@@ -336,6 +377,7 @@ class FutuGreyMarketOpenDClient:
 
     def subscribe_market(self, symbol: str) -> None:
         broker_symbol = _normalize_symbol(symbol)
+        self._subscribed_symbol = broker_symbol
         subtypes = [
             self._futu.SubType.QUOTE,
             self._futu.SubType.ORDER_BOOK,
@@ -348,6 +390,11 @@ class FutuGreyMarketOpenDClient:
         )
         if ret != self._futu.RET_OK:
             raise BrokerResponseError(f"quote subscribe failed: {data}")
+        self._install_quote_push_handlers()
+
+    @property
+    def supports_push_signals(self) -> bool:
+        return self._push_handlers_enabled
 
     def ensure_trade_context(self, logger: JsonlEventLogger | None = None) -> None:
         if self._trade_context is not None:
@@ -385,6 +432,46 @@ class FutuGreyMarketOpenDClient:
         broker_symbol = _normalize_symbol(symbol)
         raw_quote = self._get_quote_row(broker_symbol)
         raw_order_book = self._get_order_book(broker_symbol)
+        return self._signal_from_payload(
+            broker_symbol=broker_symbol,
+            raw_quote=raw_quote,
+            raw_order_book=raw_order_book,
+        )
+
+    def wait_for_push_signal(
+        self,
+        symbol: str,
+        *,
+        timeout_seconds: float,
+        sleep,
+        monotonic,
+    ) -> GreyMarketSignal | None:
+        if not self.supports_push_signals:
+            return None
+        broker_symbol = _normalize_symbol(symbol)
+        deadline = monotonic() + max(timeout_seconds, 0.0)
+        while monotonic() <= deadline:
+            with self._push_lock:
+                has_new = self._push_sequence > self._last_consumed_push_sequence
+                raw_quote = self._push_quotes_by_symbol.get(broker_symbol)
+                raw_order_book = self._push_books_by_symbol.get(broker_symbol)
+                if has_new and raw_quote and raw_order_book:
+                    self._last_consumed_push_sequence = self._push_sequence
+                    return self._signal_from_payload(
+                        broker_symbol=broker_symbol,
+                        raw_quote=dict(raw_quote),
+                        raw_order_book=dict(raw_order_book),
+                    )
+            sleep(0.001)
+        return None
+
+    def _signal_from_payload(
+        self,
+        *,
+        broker_symbol: str,
+        raw_quote: dict[str, Any],
+        raw_order_book: dict[str, Any],
+    ) -> GreyMarketSignal:
         ask = _first_book_level(raw_order_book, "Ask")
         bid = _first_book_level(raw_order_book, "Bid")
         orderbook_timestamp = _first_present(
@@ -492,6 +579,55 @@ class FutuGreyMarketOpenDClient:
 
             self._trade_context.set_handler(DealHandler())
 
+    def _install_quote_push_handlers(self) -> None:
+        if self._subscribed_symbol is None:
+            return
+        if not hasattr(self._futu, "StockQuoteHandlerBase"):
+            return
+        if not hasattr(self._futu, "OrderBookHandlerBase"):
+            return
+
+        futu = self._futu
+        subscribed_symbol = self._subscribed_symbol
+
+        class QuoteHandler(futu.StockQuoteHandlerBase):
+            def __init__(self, parent: "FutuGreyMarketOpenDClient") -> None:
+                super().__init__()
+                self._parent = parent
+
+            def on_recv_rsp(self, rsp_pb):
+                ret, data = super().on_recv_rsp(rsp_pb)
+                if ret != futu.RET_OK:
+                    return ret, data
+                rows = _rows_from_table(data)
+                with self._parent._push_lock:
+                    for row in rows:
+                        symbol = str(row.get("code") or subscribed_symbol).strip().upper()
+                        self._parent._push_quotes_by_symbol[symbol] = dict(row)
+                        self._parent._push_sequence += 1
+                return ret, data
+
+        class OrderBookHandler(futu.OrderBookHandlerBase):
+            def __init__(self, parent: "FutuGreyMarketOpenDClient") -> None:
+                super().__init__()
+                self._parent = parent
+
+            def on_recv_rsp(self, rsp_pb):
+                ret, data = super().on_recv_rsp(rsp_pb)
+                if ret != futu.RET_OK:
+                    return ret, data
+                if not isinstance(data, dict):
+                    return ret, data
+                symbol = str(data.get("code") or subscribed_symbol).strip().upper()
+                with self._parent._push_lock:
+                    self._parent._push_books_by_symbol[symbol] = dict(data)
+                    self._parent._push_sequence += 1
+                return ret, data
+
+        self._quote_context.set_handler(QuoteHandler(self))
+        self._quote_context.set_handler(OrderBookHandler(self))
+        self._push_handlers_enabled = True
+
 
 def log_signal(logger: JsonlEventLogger, signal: GreyMarketSignal) -> None:
     logger.log(
@@ -520,11 +656,27 @@ def run_replay(
     rules: GreyMarketTriggerRules,
     logger: JsonlEventLogger,
     stdout: TextIO = sys.stdout,
+    cost_reducer_dry_run: bool = False,
+    core_ratio: Decimal = Decimal("0.5"),
+    trading_ratio: Decimal = Decimal("0.5"),
+    estimated_roundtrip_cost_bps: Decimal = Decimal("10"),
+    safety_buffer_bps: Decimal = Decimal("5"),
 ) -> int:
     trigger = GreyMarketOpenTrigger(rules)
     logical_now = 0.0
     submitted = 0
     state_by_symbol: dict[str, dict[str, Any]] = {}
+    adaptive_tracker = IntradayAdaptiveTracker()
+    cost_reducer_engine = CostReducerEngine(
+        CostReducerRules(
+            core_ratio=core_ratio,
+            trading_ratio=trading_ratio,
+            estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
+            safety_buffer_bps=safety_buffer_bps,
+        )
+    )
+    cost_reducer_state = CostReducerState()
+    inventory_state = None
 
     with input_path.open("r", encoding="utf-8") as replay_file:
         for line_number, line in enumerate(replay_file, start=1):
@@ -556,6 +708,61 @@ def run_replay(
                 continue
 
             log_signal(logger, signal)
+            if cost_reducer_dry_run:
+                adaptive_state = adaptive_tracker.update_from_signal(signal)
+                if adaptive_state.last_price is not None and inventory_state is None:
+                    lot_size = int(
+                        float((signal.raw_quote or {}).get("lot_size", 100) or 100)
+                    )
+                    inventory_state = split_inventory_targets(
+                        total_quantity=rules.quantity,
+                        lot_size=max(lot_size, 1),
+                        core_ratio=core_ratio,
+                        trading_ratio=trading_ratio,
+                    )
+                    inventory_state.seed_opening_inventory(
+                        anchor_price=adaptive_state.last_price
+                    )
+                if inventory_state is not None:
+                    reducer_decision = cost_reducer_engine.evaluate(
+                        inventory=inventory_state,
+                        market=adaptive_state,
+                        state=cost_reducer_state,
+                    )
+                    logger.log("adaptive_market_state", **_dataclass_to_dict(adaptive_state))
+                    logger.log("inventory_state", **_dataclass_to_dict(inventory_state))
+                    logger.log(
+                        "cost_reducer_decision",
+                        action=reducer_decision.action.value,
+                        quantity=reducer_decision.quantity,
+                        reason=reducer_decision.reason,
+                    )
+                    if reducer_decision.action is CostReducerAction.SELL_TRADING:
+                        logger.log(
+                            "trading_sell_intent",
+                            quantity=reducer_decision.quantity,
+                            price=adaptive_state.last_price,
+                        )
+                        apply_dry_run_fill(
+                            decision=reducer_decision,
+                            market=adaptive_state,
+                            inventory=inventory_state,
+                            state=cost_reducer_state,
+                            estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
+                        )
+                    elif reducer_decision.action is CostReducerAction.REBUY_TRADING:
+                        logger.log(
+                            "trading_rebuy_intent",
+                            quantity=reducer_decision.quantity,
+                            price=adaptive_state.last_price,
+                        )
+                        apply_dry_run_fill(
+                            decision=reducer_decision,
+                            market=adaptive_state,
+                            inventory=inventory_state,
+                            state=cost_reducer_state,
+                            estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
+                        )
             decision = trigger.evaluate(signal, now_monotonic=logical_now)
             logger.log(
                 "trigger_event",
@@ -589,6 +796,11 @@ def run_live(
     stdout: TextIO = sys.stdout,
     sleep=_sleep,
     monotonic=_monotonic,
+    cost_reducer_dry_run: bool = False,
+    core_ratio: Decimal = Decimal("0.5"),
+    trading_ratio: Decimal = Decimal("0.5"),
+    estimated_roundtrip_cost_bps: Decimal = Decimal("10"),
+    safety_buffer_bps: Decimal = Decimal("5"),
 ) -> int:
     runtime_config = config or RuntimeConfig.from_env()
     validate_runtime_config(runtime_config)
@@ -600,6 +812,17 @@ def run_live(
     trigger = GreyMarketOpenTrigger(rules)
     submitted = 0
     started_at = monotonic()
+    adaptive_tracker = IntradayAdaptiveTracker()
+    cost_reducer_engine = CostReducerEngine(
+        CostReducerRules(
+            core_ratio=core_ratio,
+            trading_ratio=trading_ratio,
+            estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
+            safety_buffer_bps=safety_buffer_bps,
+        )
+    )
+    cost_reducer_state = CostReducerState()
+    inventory_state = None
 
     with FutuGreyMarketOpenDClient(runtime_config) as client:
         client.subscribe_market(rules.symbol)
@@ -608,8 +831,79 @@ def run_live(
             client.unlock_trade(logger)
 
         while monotonic() - started_at < timeout_seconds:
-            signal = client.read_signal(rules.symbol)
+            poll_sleep_seconds = max(poll_interval_ms, 1) / 1000.0
+            signal = client.wait_for_push_signal(
+                rules.symbol,
+                timeout_seconds=poll_sleep_seconds,
+                sleep=sleep,
+                monotonic=monotonic,
+            )
+            used_push_signal = signal is not None
+            if signal is None:
+                signal = client.read_signal(rules.symbol)
             log_signal(logger, signal)
+            if cost_reducer_dry_run:
+                adaptive_state = adaptive_tracker.update_from_signal(signal)
+                if adaptive_state.last_price is not None and inventory_state is None:
+                    lot_size = int(
+                        float((signal.raw_quote or {}).get("lot_size", 100) or 100)
+                    )
+                    inventory_state = split_inventory_targets(
+                        total_quantity=rules.quantity,
+                        lot_size=max(lot_size, 1),
+                        core_ratio=core_ratio,
+                        trading_ratio=trading_ratio,
+                    )
+                    inventory_state.seed_opening_inventory(
+                        anchor_price=adaptive_state.last_price
+                    )
+
+                if inventory_state is not None:
+                    decision = cost_reducer_engine.evaluate(
+                        inventory=inventory_state,
+                        market=adaptive_state,
+                        state=cost_reducer_state,
+                    )
+                    logger.log(
+                        "adaptive_market_state",
+                        **_dataclass_to_dict(adaptive_state),
+                    )
+                    logger.log(
+                        "inventory_state",
+                        **_dataclass_to_dict(inventory_state),
+                    )
+                    logger.log(
+                        "cost_reducer_decision",
+                        action=decision.action.value,
+                        quantity=decision.quantity,
+                        reason=decision.reason,
+                    )
+                    if decision.action is CostReducerAction.SELL_TRADING:
+                        logger.log(
+                            "trading_sell_intent",
+                            quantity=decision.quantity,
+                            price=adaptive_state.last_price,
+                        )
+                        apply_dry_run_fill(
+                            decision=decision,
+                            market=adaptive_state,
+                            inventory=inventory_state,
+                            state=cost_reducer_state,
+                            estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
+                        )
+                    elif decision.action is CostReducerAction.REBUY_TRADING:
+                        logger.log(
+                            "trading_rebuy_intent",
+                            quantity=decision.quantity,
+                            price=adaptive_state.last_price,
+                        )
+                        apply_dry_run_fill(
+                            decision=decision,
+                            market=adaptive_state,
+                            inventory=inventory_state,
+                            state=cost_reducer_state,
+                            estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
+                        )
             now = monotonic()
             decision = trigger.evaluate(signal, now_monotonic=now)
             logger.log(
@@ -635,7 +929,8 @@ def run_live(
 
             if decision.action is TriggerAction.BLOCK:
                 break
-            sleep(max(poll_interval_ms, 1) / 1000.0)
+            if not used_push_signal:
+                sleep(poll_sleep_seconds)
 
     return submitted
 
@@ -756,7 +1051,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=50,
         help="Snapshot poll interval after subscriptions are active.",
     )
-
     replay = subparsers.add_parser(
         "replay",
         help="Replay historical JSONL quote/order-book events in dry-run mode.",
@@ -777,6 +1071,8 @@ def main(argv: list[str] | None = None) -> int:
         max_notional=args.max_notional,
         max_order_attempts=args.max_order_attempts,
         cool_down_ms=args.cool_down_ms,
+        opening_burst_seconds=args.opening_burst_seconds,
+        opening_burst_cool_down_ms=args.opening_burst_cool_down_ms,
         kill_switch_file=args.kill_switch_file,
         remark=args.remark,
     )
@@ -788,6 +1084,13 @@ def main(argv: list[str] | None = None) -> int:
                     input_path=args.input_path,
                     rules=rules,
                     logger=logger,
+                    cost_reducer_dry_run=bool(getattr(args, "cost_reducer_dry_run", False)),
+                    core_ratio=Decimal(str(getattr(args, "core_ratio", "0.5"))),
+                    trading_ratio=Decimal(str(getattr(args, "trading_ratio", "0.5"))),
+                    estimated_roundtrip_cost_bps=Decimal(
+                        str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
+                    ),
+                    safety_buffer_bps=Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
                 )
             else:
                 submitted = run_live(
@@ -796,6 +1099,13 @@ def main(argv: list[str] | None = None) -> int:
                     real=args.real,
                     timeout_seconds=args.timeout_seconds,
                     poll_interval_ms=args.poll_interval_ms,
+                    cost_reducer_dry_run=bool(getattr(args, "cost_reducer_dry_run", False)),
+                    core_ratio=Decimal(str(getattr(args, "core_ratio", "0.5"))),
+                    trading_ratio=Decimal(str(getattr(args, "trading_ratio", "0.5"))),
+                    estimated_roundtrip_cost_bps=Decimal(
+                        str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
+                    ),
+                    safety_buffer_bps=Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
                 )
     except Exception as exc:
         with JsonlEventLogger(args.log_file) as logger:
@@ -829,6 +1139,18 @@ def _add_common_rule_args(parser: argparse.ArgumentParser) -> None:
         help="Cooldown between order attempts. A 50ms minimum is enforced.",
     )
     parser.add_argument(
+        "--opening-burst-seconds",
+        type=float,
+        default=0.0,
+        help="Duration of the first TRADING burst window in seconds.",
+    )
+    parser.add_argument(
+        "--opening-burst-cool-down-ms",
+        type=int,
+        default=50,
+        help="Cooldown used during the opening burst window.",
+    )
+    parser.add_argument(
         "--kill-switch-file",
         type=Path,
         default=None,
@@ -845,6 +1167,15 @@ def _add_common_rule_args(parser: argparse.ArgumentParser) -> None:
         default="grey_open_v1",
         help="Broker order remark used for real submissions.",
     )
+    parser.add_argument(
+        "--cost-reducer-dry-run",
+        action="store_true",
+        help="Enable dry-run cost reducer logging only (no sell/rebuy order placement).",
+    )
+    parser.add_argument("--core-ratio", default="0.5")
+    parser.add_argument("--trading-ratio", default="0.5")
+    parser.add_argument("--estimated-roundtrip-cost-bps", default="10")
+    parser.add_argument("--safety-buffer-bps", default="5")
 
 
 def _format_would_place_order(intent: GreyMarketOrderIntent, *, source: str) -> str:
@@ -860,6 +1191,15 @@ def _format_would_place_order(intent: GreyMarketOrderIntent, *, source: str) -> 
         f"time_in_force=DAY "
         f"notional={intent.notional}\n"
     )
+
+
+def _dataclass_to_dict(value) -> dict[str, Any]:
+    if hasattr(value, "__dataclass_fields__"):
+        return {
+            key: _json_default(getattr(value, key))
+            for key in value.__dataclass_fields__
+        }
+    return {"value": _json_default(value)}
 
 
 def _is_market_replay_record(record: dict[str, Any]) -> bool:

@@ -13,7 +13,7 @@ import sys
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum
+from futu_opend_execution._compat import StrEnum
 from pathlib import Path
 from typing import Any, TextIO
 
