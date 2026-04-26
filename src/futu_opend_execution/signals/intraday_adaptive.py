@@ -16,6 +16,9 @@ class AdaptiveMarketState:
     rolling_high: Decimal | None
     rolling_low: Decimal | None
     cumulative_turnover: Decimal
+    volume_delta: Decimal
+    turnover_delta: Decimal
+    cumulative_field_reset_detected: bool
     tick_count: int
     orderbook_imbalance: Decimal
     spread_bps: Decimal
@@ -63,10 +66,13 @@ class IntradayAdaptiveTracker:
             volume = Decimal("0")
 
         volume_delta = Decimal("0")
+        cumulative_field_reset_detected = False
         if self.previous_volume is not None:
             raw_volume_delta = volume - self.previous_volume
             if raw_volume_delta >= 0:
                 volume_delta = raw_volume_delta
+            else:
+                cumulative_field_reset_detected = True
         self.previous_volume = volume
 
         turnover_delta = Decimal("0")
@@ -74,6 +80,8 @@ class IntradayAdaptiveTracker:
             raw_turnover_delta = turnover - self.previous_turnover
             if raw_turnover_delta >= 0:
                 turnover_delta = raw_turnover_delta
+            else:
+                cumulative_field_reset_detected = True
         self.previous_turnover = turnover
 
         if last_price is not None and last_price > 0:
@@ -125,6 +133,9 @@ class IntradayAdaptiveTracker:
             rolling_high=rolling_high,
             rolling_low=rolling_low,
             cumulative_turnover=self._cum_turnover,
+            volume_delta=volume_delta,
+            turnover_delta=turnover_delta,
+            cumulative_field_reset_detected=cumulative_field_reset_detected,
             tick_count=self._tick_count,
             orderbook_imbalance=imbalance,
             spread_bps=spread_bps,

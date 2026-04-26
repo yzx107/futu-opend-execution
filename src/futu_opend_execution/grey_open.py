@@ -661,6 +661,14 @@ def run_replay(
     trading_ratio: Decimal = Decimal("0.5"),
     estimated_roundtrip_cost_bps: Decimal = Decimal("10"),
     safety_buffer_bps: Decimal = Decimal("5"),
+    max_spread_bps: Decimal = Decimal("20"),
+    min_turnover_to_activate: Decimal = Decimal("0"),
+    min_ticks_to_activate: int = 5,
+    overextension_vol_multiple: Decimal = Decimal("2.0"),
+    high_pullback_vol_multiple: Decimal = Decimal("0.5"),
+    rebuy_anchor_vol_band: Decimal = Decimal("1.0"),
+    max_sell_total_position_ratio: Decimal = Decimal("0.25"),
+    max_round_trips: int = 1,
 ) -> int:
     trigger = GreyMarketOpenTrigger(rules)
     logical_now = 0.0
@@ -673,10 +681,20 @@ def run_replay(
             trading_ratio=trading_ratio,
             estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
             safety_buffer_bps=safety_buffer_bps,
+            max_spread_bps=max_spread_bps,
+            min_turnover_to_activate=min_turnover_to_activate,
+            min_ticks_to_activate=min_ticks_to_activate,
+            overextension_vol_multiple=overextension_vol_multiple,
+            high_pullback_vol_multiple=high_pullback_vol_multiple,
+            rebuy_anchor_vol_band=rebuy_anchor_vol_band,
+            max_sell_total_position_ratio=max_sell_total_position_ratio,
+            max_round_trips=max_round_trips,
         )
     )
     cost_reducer_state = CostReducerState()
     inventory_state = None
+    total_sell_intents = 0
+    total_rebuy_intents = 0
 
     with input_path.open("r", encoding="utf-8") as replay_file:
         for line_number, line in enumerate(replay_file, start=1):
@@ -733,11 +751,14 @@ def run_replay(
                     logger.log("inventory_state", **_dataclass_to_dict(inventory_state))
                     logger.log(
                         "cost_reducer_decision",
-                        action=reducer_decision.action.value,
-                        quantity=reducer_decision.quantity,
-                        reason=reducer_decision.reason,
+                        **_cost_reducer_decision_payload(
+                            decision=reducer_decision,
+                            market=adaptive_state,
+                            inventory=inventory_state,
+                        ),
                     )
                     if reducer_decision.action is CostReducerAction.SELL_TRADING:
+                        total_sell_intents += 1
                         logger.log(
                             "trading_sell_intent",
                             quantity=reducer_decision.quantity,
@@ -751,6 +772,7 @@ def run_replay(
                             estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
                         )
                     elif reducer_decision.action is CostReducerAction.REBUY_TRADING:
+                        total_rebuy_intents += 1
                         logger.log(
                             "trading_rebuy_intent",
                             quantity=reducer_decision.quantity,
@@ -782,6 +804,17 @@ def run_replay(
 
             logical_now += max(rules.cool_down_ms / 1000.0, 0.001)
 
+    if cost_reducer_dry_run:
+        logger.log(
+            "cost_reducer_replay_summary",
+            **_cost_reducer_replay_summary_payload(
+                inventory=inventory_state,
+                state=cost_reducer_state,
+                total_sell_intents=total_sell_intents,
+                total_rebuy_intents=total_rebuy_intents,
+            ),
+        )
+
     return submitted
 
 
@@ -801,6 +834,14 @@ def run_live(
     trading_ratio: Decimal = Decimal("0.5"),
     estimated_roundtrip_cost_bps: Decimal = Decimal("10"),
     safety_buffer_bps: Decimal = Decimal("5"),
+    max_spread_bps: Decimal = Decimal("20"),
+    min_turnover_to_activate: Decimal = Decimal("0"),
+    min_ticks_to_activate: int = 5,
+    overextension_vol_multiple: Decimal = Decimal("2.0"),
+    high_pullback_vol_multiple: Decimal = Decimal("0.5"),
+    rebuy_anchor_vol_band: Decimal = Decimal("1.0"),
+    max_sell_total_position_ratio: Decimal = Decimal("0.25"),
+    max_round_trips: int = 1,
 ) -> int:
     runtime_config = config or RuntimeConfig.from_env()
     validate_runtime_config(runtime_config)
@@ -819,6 +860,14 @@ def run_live(
             trading_ratio=trading_ratio,
             estimated_roundtrip_cost_bps=estimated_roundtrip_cost_bps,
             safety_buffer_bps=safety_buffer_bps,
+            max_spread_bps=max_spread_bps,
+            min_turnover_to_activate=min_turnover_to_activate,
+            min_ticks_to_activate=min_ticks_to_activate,
+            overextension_vol_multiple=overextension_vol_multiple,
+            high_pullback_vol_multiple=high_pullback_vol_multiple,
+            rebuy_anchor_vol_band=rebuy_anchor_vol_band,
+            max_sell_total_position_ratio=max_sell_total_position_ratio,
+            max_round_trips=max_round_trips,
         )
     )
     cost_reducer_state = CostReducerState()
@@ -874,9 +923,11 @@ def run_live(
                     )
                     logger.log(
                         "cost_reducer_decision",
-                        action=decision.action.value,
-                        quantity=decision.quantity,
-                        reason=decision.reason,
+                        **_cost_reducer_decision_payload(
+                            decision=decision,
+                            market=adaptive_state,
+                            inventory=inventory_state,
+                        ),
                     )
                     if decision.action is CostReducerAction.SELL_TRADING:
                         logger.log(
@@ -1091,6 +1142,24 @@ def main(argv: list[str] | None = None) -> int:
                         str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
                     ),
                     safety_buffer_bps=Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
+                    max_spread_bps=Decimal(str(getattr(args, "max_spread_bps", "20"))),
+                    min_turnover_to_activate=Decimal(
+                        str(getattr(args, "min_turnover_to_activate", "0"))
+                    ),
+                    min_ticks_to_activate=int(getattr(args, "min_ticks_to_activate", 5)),
+                    overextension_vol_multiple=Decimal(
+                        str(getattr(args, "overextension_vol_multiple", "2.0"))
+                    ),
+                    high_pullback_vol_multiple=Decimal(
+                        str(getattr(args, "high_pullback_vol_multiple", "0.5"))
+                    ),
+                    rebuy_anchor_vol_band=Decimal(
+                        str(getattr(args, "rebuy_anchor_vol_band", "1.0"))
+                    ),
+                    max_sell_total_position_ratio=Decimal(
+                        str(getattr(args, "max_sell_total_position_ratio", "0.25"))
+                    ),
+                    max_round_trips=int(getattr(args, "max_round_trips", 1)),
                 )
             else:
                 submitted = run_live(
@@ -1106,6 +1175,24 @@ def main(argv: list[str] | None = None) -> int:
                         str(getattr(args, "estimated_roundtrip_cost_bps", "10"))
                     ),
                     safety_buffer_bps=Decimal(str(getattr(args, "safety_buffer_bps", "5"))),
+                    max_spread_bps=Decimal(str(getattr(args, "max_spread_bps", "20"))),
+                    min_turnover_to_activate=Decimal(
+                        str(getattr(args, "min_turnover_to_activate", "0"))
+                    ),
+                    min_ticks_to_activate=int(getattr(args, "min_ticks_to_activate", 5)),
+                    overextension_vol_multiple=Decimal(
+                        str(getattr(args, "overextension_vol_multiple", "2.0"))
+                    ),
+                    high_pullback_vol_multiple=Decimal(
+                        str(getattr(args, "high_pullback_vol_multiple", "0.5"))
+                    ),
+                    rebuy_anchor_vol_band=Decimal(
+                        str(getattr(args, "rebuy_anchor_vol_band", "1.0"))
+                    ),
+                    max_sell_total_position_ratio=Decimal(
+                        str(getattr(args, "max_sell_total_position_ratio", "0.25"))
+                    ),
+                    max_round_trips=int(getattr(args, "max_round_trips", 1)),
                 )
     except Exception as exc:
         with JsonlEventLogger(args.log_file) as logger:
@@ -1176,6 +1263,14 @@ def _add_common_rule_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--trading-ratio", default="0.5")
     parser.add_argument("--estimated-roundtrip-cost-bps", default="10")
     parser.add_argument("--safety-buffer-bps", default="5")
+    parser.add_argument("--max-spread-bps", default="20")
+    parser.add_argument("--min-turnover-to-activate", default="0")
+    parser.add_argument("--min-ticks-to-activate", type=int, default=5)
+    parser.add_argument("--overextension-vol-multiple", default="2.0")
+    parser.add_argument("--high-pullback-vol-multiple", default="0.5")
+    parser.add_argument("--rebuy-anchor-vol-band", default="1.0")
+    parser.add_argument("--max-sell-total-position-ratio", default="0.25")
+    parser.add_argument("--max-round-trips", type=int, default=1)
 
 
 def _format_would_place_order(intent: GreyMarketOrderIntent, *, source: str) -> str:
@@ -1200,6 +1295,59 @@ def _dataclass_to_dict(value) -> dict[str, Any]:
             for key in value.__dataclass_fields__
         }
     return {"value": _json_default(value)}
+
+
+def _cost_reducer_decision_payload(
+    *,
+    decision,
+    market,
+    inventory,
+) -> dict[str, Any]:
+    return {
+        "action": decision.action.value,
+        "quantity": decision.quantity,
+        "reason": decision.reason,
+        "last_price": _json_default(market.last_price),
+        "opening_vwap": _json_default(market.opening_vwap),
+        "rolling_vwap": _json_default(market.rolling_vwap),
+        "realized_vol": _json_default(market.realized_vol),
+        "rolling_high": _json_default(market.rolling_high),
+        "orderbook_imbalance": _json_default(market.orderbook_imbalance),
+        "spread_bps": _json_default(market.spread_bps),
+        "current_position": inventory.current_position,
+        "trading_available_to_sell": inventory.trading_available_to_sell,
+        "trading_available_to_rebuy": inventory.trading_available_to_rebuy,
+        "economic_cost_basis": _json_default(inventory.economic_cost_basis),
+    }
+
+
+def _cost_reducer_replay_summary_payload(
+    *,
+    inventory,
+    state: CostReducerState,
+    total_sell_intents: int,
+    total_rebuy_intents: int,
+) -> dict[str, Any]:
+    return {
+        "total_sell_intents": total_sell_intents,
+        "total_rebuy_intents": total_rebuy_intents,
+        "final_current_position": (
+            inventory.current_position if inventory is not None else None
+        ),
+        "final_economic_cost_basis": (
+            _json_default(inventory.economic_cost_basis)
+            if inventory is not None
+            else None
+        ),
+        "final_trading_qty_sold": (
+            inventory.trading_qty_sold if inventory is not None else None
+        ),
+        "final_trading_qty_rebought": (
+            inventory.trading_qty_rebought if inventory is not None else None
+        ),
+        "round_trips_completed": state.round_trips_completed,
+        "last_sell_price": _json_default(state.last_sell_price),
+    }
 
 
 def _is_market_replay_record(record: dict[str, Any]) -> bool:

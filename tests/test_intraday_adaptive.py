@@ -68,7 +68,14 @@ class AdaptiveTrackerTests(unittest.TestCase):
 
         self.assertIsNone(first.opening_vwap)
         self.assertEqual(second.opening_vwap, Decimal("10.1"))
+        self.assertFalse(second.cumulative_field_reset_detected)
+        self.assertEqual(second.volume_delta, Decimal("200"))
+        self.assertEqual(second.turnover_delta, Decimal("2020"))
         self.assertEqual(reset.opening_vwap, Decimal("10.1"))
+        self.assertTrue(reset.cumulative_field_reset_detected)
+        self.assertEqual(reset.volume_delta, Decimal("0"))
+        self.assertEqual(reset.turnover_delta, Decimal("0"))
+        self.assertEqual(reset.cumulative_turnover, Decimal("2020"))
         self.assertEqual(third.opening_vwap, Decimal("10.155"))
         self.assertEqual(third.rolling_vwap, Decimal("10.16"))
 

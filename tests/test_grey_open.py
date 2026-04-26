@@ -19,7 +19,12 @@ from futu_opend_execution import (
     signal_from_record,
 )
 from futu_opend_execution.grey_open import run_live
+from futu_opend_execution.grey_open import build_parser
 from futu_opend_execution.risk import ExecutionValidationError
+from futu_opend_execution.services.cost_reducer import (
+    CostReducerAction,
+    CostReducerDecision,
+)
 
 
 class GreyMarketOpenTriggerTests(unittest.TestCase):
@@ -216,6 +221,268 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
 
 
 class GreyMarketReplayTests(unittest.TestCase):
+    def _write_cost_reducer_replay(self, path: Path) -> None:
+        path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "symbol": "HK.01234",
+                            "dark_status": "TRADING",
+                            "best_bid": "10.00",
+                            "best_ask": "10.02",
+                            "bid_quantity": 1200,
+                            "ask_quantity": 800,
+                            "raw_quote": {
+                                "dark_status": "TRADING",
+                                "last_price": "10.01",
+                                "turnover": "10000",
+                                "volume": "1000",
+                                "lot_size": 100,
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "symbol": "HK.01234",
+                            "dark_status": "TRADING",
+                            "best_bid": "10.10",
+                            "best_ask": "10.12",
+                            "bid_quantity": 1400,
+                            "ask_quantity": 600,
+                            "raw_quote": {
+                                "dark_status": "TRADING",
+                                "last_price": "10.11",
+                                "turnover": "12020",
+                                "volume": "1200",
+                                "lot_size": 100,
+                            },
+                        }
+                    ),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_parser_accepts_cost_reducer_parameters(self) -> None:
+        args = build_parser().parse_args(
+            [
+                "replay",
+                "events.jsonl",
+                "HK.01234",
+                "--quantity",
+                "1000",
+                "--max-price",
+                "12.80",
+                "--max-qty",
+                "1000",
+                "--max-notional",
+                "12800",
+                "--cost-reducer-dry-run",
+                "--max-spread-bps",
+                "100",
+                "--min-turnover-to-activate",
+                "500000",
+                "--min-ticks-to-activate",
+                "10",
+                "--overextension-vol-multiple",
+                "1.5",
+                "--high-pullback-vol-multiple",
+                "0.25",
+                "--rebuy-anchor-vol-band",
+                "0.75",
+                "--max-sell-total-position-ratio",
+                "0.20",
+                "--max-round-trips",
+                "3",
+            ]
+        )
+
+        self.assertTrue(args.cost_reducer_dry_run)
+        self.assertEqual(args.max_spread_bps, "100")
+        self.assertEqual(args.min_turnover_to_activate, "500000")
+        self.assertEqual(args.min_ticks_to_activate, 10)
+        self.assertEqual(args.overextension_vol_multiple, "1.5")
+        self.assertEqual(args.high_pullback_vol_multiple, "0.25")
+        self.assertEqual(args.rebuy_anchor_vol_band, "0.75")
+        self.assertEqual(args.max_sell_total_position_ratio, "0.20")
+        self.assertEqual(args.max_round_trips, 3)
+
+    def test_cost_reducer_rules_receive_custom_replay_values(self) -> None:
+        captured_rules = []
+
+        class FakeCostReducerEngine:
+            def __init__(self, rules) -> None:
+                captured_rules.append(rules)
+
+            def evaluate(self, *, inventory, market, state):
+                del inventory, market, state
+                return CostReducerDecision(CostReducerAction.WAIT, reason="fake")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            replay_path = temp_path / "events.jsonl"
+            log_path = temp_path / "out.jsonl"
+            self._write_cost_reducer_replay(replay_path)
+            rules = GreyMarketTriggerRules(
+                symbol="HK.01234",
+                quantity=1000,
+                max_price="12.80",
+                max_qty=1000,
+                max_notional="12800",
+            )
+
+            with patch("futu_opend_execution.grey_open.CostReducerEngine", FakeCostReducerEngine):
+                with JsonlEventLogger(log_path) as logger:
+                    run_replay(
+                        input_path=replay_path,
+                        rules=rules,
+                        logger=logger,
+                        stdout=io.StringIO(),
+                        cost_reducer_dry_run=True,
+                        core_ratio=Decimal("0.6"),
+                        trading_ratio=Decimal("0.4"),
+                        estimated_roundtrip_cost_bps=Decimal("30"),
+                        safety_buffer_bps=Decimal("20"),
+                        max_spread_bps=Decimal("100"),
+                        min_turnover_to_activate=Decimal("500000"),
+                        min_ticks_to_activate=10,
+                        overextension_vol_multiple=Decimal("1.5"),
+                        high_pullback_vol_multiple=Decimal("0.25"),
+                        rebuy_anchor_vol_band=Decimal("0.75"),
+                        max_sell_total_position_ratio=Decimal("0.20"),
+                        max_round_trips=3,
+                    )
+
+        self.assertEqual(len(captured_rules), 1)
+        self.assertEqual(captured_rules[0].core_ratio, Decimal("0.6"))
+        self.assertEqual(captured_rules[0].trading_ratio, Decimal("0.4"))
+        self.assertEqual(captured_rules[0].estimated_roundtrip_cost_bps, Decimal("30"))
+        self.assertEqual(captured_rules[0].safety_buffer_bps, Decimal("20"))
+        self.assertEqual(captured_rules[0].max_spread_bps, Decimal("100"))
+        self.assertEqual(captured_rules[0].min_turnover_to_activate, Decimal("500000"))
+        self.assertEqual(captured_rules[0].min_ticks_to_activate, 10)
+        self.assertEqual(captured_rules[0].overextension_vol_multiple, Decimal("1.5"))
+        self.assertEqual(captured_rules[0].high_pullback_vol_multiple, Decimal("0.25"))
+        self.assertEqual(captured_rules[0].rebuy_anchor_vol_band, Decimal("0.75"))
+        self.assertEqual(captured_rules[0].max_sell_total_position_ratio, Decimal("0.20"))
+        self.assertEqual(captured_rules[0].max_round_trips, 3)
+
+    def test_cost_reducer_decision_log_includes_market_and_inventory_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            replay_path = temp_path / "events.jsonl"
+            log_path = temp_path / "out.jsonl"
+            self._write_cost_reducer_replay(replay_path)
+            rules = GreyMarketTriggerRules(
+                symbol="HK.01234",
+                quantity=1000,
+                max_price="12.80",
+                max_qty=1000,
+                max_notional="12800",
+            )
+
+            with JsonlEventLogger(log_path) as logger:
+                run_replay(
+                    input_path=replay_path,
+                    rules=rules,
+                    logger=logger,
+                    stdout=io.StringIO(),
+                    cost_reducer_dry_run=True,
+                )
+
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        decision = next(record for record in records if record["event"] == "cost_reducer_decision")
+        for key in (
+            "action",
+            "quantity",
+            "reason",
+            "last_price",
+            "opening_vwap",
+            "rolling_vwap",
+            "realized_vol",
+            "rolling_high",
+            "orderbook_imbalance",
+            "spread_bps",
+            "current_position",
+            "trading_available_to_sell",
+            "trading_available_to_rebuy",
+            "economic_cost_basis",
+        ):
+            self.assertIn(key, decision)
+
+    def test_replay_summary_emitted_for_cost_reducer_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            replay_path = temp_path / "events.jsonl"
+            log_path = temp_path / "out.jsonl"
+            self._write_cost_reducer_replay(replay_path)
+            rules = GreyMarketTriggerRules(
+                symbol="HK.01234",
+                quantity=1000,
+                max_price="12.80",
+                max_qty=1000,
+                max_notional="12800",
+            )
+
+            with JsonlEventLogger(log_path) as logger:
+                run_replay(
+                    input_path=replay_path,
+                    rules=rules,
+                    logger=logger,
+                    stdout=io.StringIO(),
+                    cost_reducer_dry_run=True,
+                )
+
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        summary = next(record for record in records if record["event"] == "cost_reducer_replay_summary")
+        self.assertEqual(summary["total_sell_intents"], 0)
+        self.assertEqual(summary["total_rebuy_intents"], 0)
+        self.assertEqual(summary["final_current_position"], 1000)
+        self.assertEqual(summary["final_trading_qty_sold"], 0)
+        self.assertEqual(summary["final_trading_qty_rebought"], 0)
+
+    def test_replay_summary_not_emitted_without_cost_reducer_dry_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            replay_path = temp_path / "events.jsonl"
+            log_path = temp_path / "out.jsonl"
+            self._write_cost_reducer_replay(replay_path)
+            rules = GreyMarketTriggerRules(
+                symbol="HK.01234",
+                quantity=1000,
+                max_price="12.80",
+                max_qty=1000,
+                max_notional="12800",
+            )
+
+            with JsonlEventLogger(log_path) as logger:
+                run_replay(
+                    input_path=replay_path,
+                    rules=rules,
+                    logger=logger,
+                    stdout=io.StringIO(),
+                    cost_reducer_dry_run=False,
+                )
+
+            records = [
+                json.loads(line)
+                for line in log_path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertFalse(
+            any(record["event"] == "cost_reducer_replay_summary" for record in records)
+        )
+
     def test_signal_from_record_accepts_open_d_shaped_payload(self) -> None:
         signal = signal_from_record(
             {

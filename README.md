@@ -285,6 +285,14 @@ PYTHONPATH=src python -m futu_opend_execution.harness 09868 1000 \
 - `--trading-ratio`（默认 `0.5`）
 - `--estimated-roundtrip-cost-bps`（默认 `10`）
 - `--safety-buffer-bps`（默认 `5`）
+- `--max-spread-bps`（默认 `20`）
+- `--min-turnover-to-activate`（默认 `0`）
+- `--min-ticks-to-activate`（默认 `5`）
+- `--overextension-vol-multiple`（默认 `2.0`）
+- `--high-pullback-vol-multiple`（默认 `0.5`）
+- `--rebuy-anchor-vol-band`（默认 `1.0`）
+- `--max-sell-total-position-ratio`（默认 `0.25`）
+- `--max-round-trips`（默认 `1`）
 
 该模式只输出日志事件，不会自动发出任何卖出/回补真实订单。新增日志事件：
 
@@ -293,6 +301,25 @@ PYTHONPATH=src python -m futu_opend_execution.harness 09868 1000 \
 - `trading_rebuy_intent`
 - `inventory_state`
 - `adaptive_market_state`
+
+replay 成本优化器示例：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.grey_open replay logs/grey_open_01234.jsonl HK.01234 \
+  --quantity 1000 \
+  --max-price 12.80 \
+  --max-qty 1000 \
+  --max-notional 12800 \
+  --cost-reducer-dry-run \
+  --core-ratio 0.5 \
+  --trading-ratio 0.5 \
+  --estimated-roundtrip-cost-bps 30 \
+  --safety-buffer-bps 20 \
+  --max-spread-bps 100 \
+  --min-ticks-to-activate 10 \
+  --max-sell-total-position-ratio 0.25 \
+  --log-file logs/replay_cost_reducer_01234.jsonl
+```
 
 ### Live Dry-run
 
