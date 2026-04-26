@@ -47,6 +47,21 @@ class FakeNormalTradeClient:
         return [[{"order_id": order_id, "code": symbol, "order_status": "FILLED_ALL"}]]
 
 
+class FailingNormalTradeClient:
+    def __init__(self, config) -> None:
+        self.config = config
+
+    def __enter__(self) -> "FailingNormalTradeClient":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    def read_quote(self, symbol: str):
+        del symbol
+        raise RuntimeError("OpenD unreachable")
+
+
 def make_state(temp_dir: str, *, allow_real_trade: bool = False) -> WebState:
     return WebState(
         config=RuntimeConfig(allow_real_trade=allow_real_trade),
@@ -65,6 +80,34 @@ class WebAppTests(unittest.TestCase):
 
         self.assertTrue(health["kill_switch"])
         self.assertFalse(health["allow_real_trade"])
+
+    def test_active_health_probe_reports_quote_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+
+            with patch(
+                "futu_opend_execution.web_app.FutuNormalTradeClient",
+                FakeNormalTradeClient,
+            ):
+                health = api_health(state, active=True, symbol="00700")
+
+        self.assertEqual(health["status"], "READY")
+        self.assertTrue(health["opend_quote_probe"]["ok"])
+        self.assertEqual(health["opend_quote_probe"]["symbol"], "HK.00700")
+
+    def test_active_health_probe_marks_degraded_on_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+
+            with patch(
+                "futu_opend_execution.web_app.FutuNormalTradeClient",
+                FailingNormalTradeClient,
+            ):
+                health = api_health(state, active="true", symbol="00700")
+
+        self.assertEqual(health["status"], "DEGRADED")
+        self.assertFalse(health["opend_quote_probe"]["ok"])
+        self.assertEqual(health["opend_quote_probe"]["error_type"], "RuntimeError")
 
     def test_quote_api_uses_client_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

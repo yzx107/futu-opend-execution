@@ -10,7 +10,7 @@ setup(
     package_data={
         "futu_opend_execution": ["web_static/*"],
     },
-    python_requires=">=3.11",
+    python_requires=">=3.10",
     extras_require={
         "futu": ["futu-api"],
     },

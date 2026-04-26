@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - name: Checkout
@@ -27,8 +27,11 @@ jobs:
       - name: Install package
         run: pip install -e .
 
+      - name: Install test dependencies
+        run: pip install pytest
+
       - name: Import package
         run: python -c "import futu_opend_execution; print('import ok')"
 
       - name: Run tests
-        run: python -m unittest discover -s tests
+        run: python -m pytest -q

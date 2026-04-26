@@ -6,16 +6,19 @@ import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from futu_opend_execution import (
     GreyMarketOpenTrigger,
     GreyMarketSignal,
     GreyMarketTriggerRules,
     JsonlEventLogger,
+    RuntimeConfig,
     TriggerAction,
     run_replay,
     signal_from_record,
 )
+from futu_opend_execution.grey_open import run_live
 from futu_opend_execution.risk import ExecutionValidationError
 
 
@@ -108,6 +111,38 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
         self.assertEqual(second.action, TriggerAction.WAIT)
         self.assertEqual(third.action, TriggerAction.ORDER)
 
+    def test_opening_burst_uses_shorter_cooldown_for_first_second(self) -> None:
+        rules = GreyMarketTriggerRules(
+            symbol="01234",
+            quantity=100,
+            max_price="10",
+            max_qty=100,
+            max_notional="1000",
+            max_order_attempts=5,
+            cool_down_ms=300,
+            opening_burst_seconds=1.0,
+            opening_burst_cool_down_ms=50,
+        )
+        trigger = GreyMarketOpenTrigger(rules)
+        signal = GreyMarketSignal(
+            symbol="HK.01234",
+            dark_status="TRADING",
+            best_ask="9.90",
+        )
+
+        first = trigger.evaluate(signal, now_monotonic=0.0)
+        trigger.record_attempt(now_monotonic=0.0)
+        second = trigger.evaluate(signal, now_monotonic=0.08)
+        trigger.record_attempt(now_monotonic=0.08)
+        third = trigger.evaluate(signal, now_monotonic=1.20)
+        trigger.record_attempt(now_monotonic=1.20)
+        fourth = trigger.evaluate(signal, now_monotonic=1.35)
+
+        self.assertEqual(first.action, TriggerAction.ORDER)
+        self.assertEqual(second.action, TriggerAction.ORDER)
+        self.assertEqual(third.action, TriggerAction.ORDER)
+        self.assertEqual(fourth.action, TriggerAction.WAIT)
+
     def test_rule_validation_rejects_notional_over_cap(self) -> None:
         with self.assertRaises(ExecutionValidationError):
             GreyMarketTriggerRules(
@@ -117,6 +152,67 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
                 max_qty=101,
                 max_notional="1000",
             )
+
+    def test_run_live_uses_push_signal_when_available(self) -> None:
+        class FakeClient:
+            def __init__(self, config) -> None:
+                del config
+                self.supports_push_signals = True
+                self.poll_reads = 0
+                self.push_reads = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def subscribe_market(self, symbol: str) -> None:
+                del symbol
+
+            def ensure_trade_context(self, logger) -> None:
+                del logger
+
+            def unlock_trade(self, logger) -> None:
+                del logger
+
+            def wait_for_push_signal(self, symbol: str, *, timeout_seconds, sleep, monotonic):
+                del symbol, timeout_seconds, sleep, monotonic
+                self.push_reads += 1
+                return GreyMarketSignal(
+                    symbol="HK.01234",
+                    dark_status="TRADING",
+                    best_ask="9.90",
+                )
+
+            def read_signal(self, symbol: str):
+                del symbol
+                self.poll_reads += 1
+                raise AssertionError("read_signal should not be called when push signal is available")
+
+        rules = GreyMarketTriggerRules(
+            symbol="01234",
+            quantity=100,
+            max_price="10",
+            max_qty=100,
+            max_notional="1000",
+            max_order_attempts=1,
+            cool_down_ms=300,
+        )
+        logger = JsonlEventLogger(stream=io.StringIO())
+
+        with patch("futu_opend_execution.grey_open.FutuGreyMarketOpenDClient", FakeClient):
+            submitted = run_live(
+                rules=rules,
+                logger=logger,
+                real=False,
+                timeout_seconds=0.2,
+                poll_interval_ms=50,
+                config=RuntimeConfig(),
+                stdout=io.StringIO(),
+            )
+
+        self.assertEqual(submitted, 1)
 
 
 class GreyMarketReplayTests(unittest.TestCase):

@@ -12,14 +12,16 @@ import json
 import sys
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
-from enum import StrEnum
+from futu_opend_execution._compat import StrEnum
 from pathlib import Path
+from threading import Lock
 from time import monotonic as _monotonic
 from time import sleep as _sleep
 from typing import Any, Iterable, TextIO
 
+from futu_opend_execution._compat import UTC
 from futu_opend_execution.config import RuntimeConfig
 from futu_opend_execution.execution.broker import (
     BrokerConfigurationError,
@@ -135,6 +137,8 @@ class GreyMarketTriggerRules:
     max_notional: Decimal
     max_order_attempts: int = 3
     cool_down_ms: int = 300
+    opening_burst_seconds: float = 0.0
+    opening_burst_cool_down_ms: int = 50
     kill_switch_file: Path | None = None
     remark: str = "grey_open_v1"
 
@@ -172,6 +176,14 @@ class GreyMarketTriggerRules:
             )
         if self.cool_down_ms < 0:
             raise ExecutionValidationError("cool_down_ms must be zero or greater.")
+        if self.opening_burst_seconds < 0:
+            raise ExecutionValidationError(
+                "opening_burst_seconds must be zero or greater."
+            )
+        if self.opening_burst_cool_down_ms < 0:
+            raise ExecutionValidationError(
+                "opening_burst_cool_down_ms must be zero or greater."
+            )
 
 
 class GreyMarketOpenTrigger:
@@ -181,6 +193,7 @@ class GreyMarketOpenTrigger:
         self._rules = rules
         self._attempts = 0
         self._order_times: deque[float] = deque()
+        self._first_trading_seen_at: float | None = None
 
     @property
     def attempts(self) -> int:
@@ -197,6 +210,9 @@ class GreyMarketOpenTrigger:
                 action=TriggerAction.WAIT,
                 reason=f"symbol mismatch: expected {self._rules.symbol}, got {signal.symbol}",
             )
+
+        if signal.dark_status == "TRADING" and self._first_trading_seen_at is None:
+            self._first_trading_seen_at = now_monotonic
 
         if self._rules.kill_switch_file and self._rules.kill_switch_file.exists():
             return GreyMarketTriggerDecision(
@@ -219,7 +235,7 @@ class GreyMarketOpenTrigger:
 
         if self._order_times:
             elapsed = now_monotonic - self._order_times[-1]
-            if elapsed < self._minimum_interval_seconds:
+            if elapsed < self._minimum_interval_seconds(now_monotonic):
                 return GreyMarketTriggerDecision(
                     action=TriggerAction.WAIT,
                     reason="cool_down_ms/minimum order interval not elapsed",
@@ -268,9 +284,18 @@ class GreyMarketOpenTrigger:
         self._order_times.append(now_monotonic)
         self._prune_order_times(now_monotonic)
 
-    @property
-    def _minimum_interval_seconds(self) -> float:
-        return max(self._rules.cool_down_ms / 1000.0, SAFE_MIN_ORDER_INTERVAL_SECONDS)
+    def _minimum_interval_seconds(self, now_monotonic: float) -> float:
+        in_opening_burst = (
+            self._first_trading_seen_at is not None
+            and now_monotonic - self._first_trading_seen_at
+            <= self._rules.opening_burst_seconds
+        )
+        configured_cool_down_ms = (
+            self._rules.opening_burst_cool_down_ms
+            if in_opening_burst
+            else self._rules.cool_down_ms
+        )
+        return max(configured_cool_down_ms / 1000.0, SAFE_MIN_ORDER_INTERVAL_SECONDS)
 
     def _prune_order_times(self, now_monotonic: float) -> None:
         while (
@@ -327,6 +352,13 @@ class FutuGreyMarketOpenDClient:
         )
         self._trade_context = None
         self._trade_unlocked = False
+        self._subscribed_symbol: str | None = None
+        self._push_lock = Lock()
+        self._push_handlers_enabled = False
+        self._push_quotes_by_symbol: dict[str, dict[str, Any]] = {}
+        self._push_books_by_symbol: dict[str, dict[str, Any]] = {}
+        self._push_sequence = 0
+        self._last_consumed_push_sequence = 0
 
     def __enter__(self) -> "FutuGreyMarketOpenDClient":
         return self
@@ -336,6 +368,7 @@ class FutuGreyMarketOpenDClient:
 
     def subscribe_market(self, symbol: str) -> None:
         broker_symbol = _normalize_symbol(symbol)
+        self._subscribed_symbol = broker_symbol
         subtypes = [
             self._futu.SubType.QUOTE,
             self._futu.SubType.ORDER_BOOK,
@@ -348,6 +381,11 @@ class FutuGreyMarketOpenDClient:
         )
         if ret != self._futu.RET_OK:
             raise BrokerResponseError(f"quote subscribe failed: {data}")
+        self._install_quote_push_handlers()
+
+    @property
+    def supports_push_signals(self) -> bool:
+        return self._push_handlers_enabled
 
     def ensure_trade_context(self, logger: JsonlEventLogger | None = None) -> None:
         if self._trade_context is not None:
@@ -385,6 +423,46 @@ class FutuGreyMarketOpenDClient:
         broker_symbol = _normalize_symbol(symbol)
         raw_quote = self._get_quote_row(broker_symbol)
         raw_order_book = self._get_order_book(broker_symbol)
+        return self._signal_from_payload(
+            broker_symbol=broker_symbol,
+            raw_quote=raw_quote,
+            raw_order_book=raw_order_book,
+        )
+
+    def wait_for_push_signal(
+        self,
+        symbol: str,
+        *,
+        timeout_seconds: float,
+        sleep,
+        monotonic,
+    ) -> GreyMarketSignal | None:
+        if not self.supports_push_signals:
+            return None
+        broker_symbol = _normalize_symbol(symbol)
+        deadline = monotonic() + max(timeout_seconds, 0.0)
+        while monotonic() <= deadline:
+            with self._push_lock:
+                has_new = self._push_sequence > self._last_consumed_push_sequence
+                raw_quote = self._push_quotes_by_symbol.get(broker_symbol)
+                raw_order_book = self._push_books_by_symbol.get(broker_symbol)
+                if has_new and raw_quote and raw_order_book:
+                    self._last_consumed_push_sequence = self._push_sequence
+                    return self._signal_from_payload(
+                        broker_symbol=broker_symbol,
+                        raw_quote=dict(raw_quote),
+                        raw_order_book=dict(raw_order_book),
+                    )
+            sleep(0.001)
+        return None
+
+    def _signal_from_payload(
+        self,
+        *,
+        broker_symbol: str,
+        raw_quote: dict[str, Any],
+        raw_order_book: dict[str, Any],
+    ) -> GreyMarketSignal:
         ask = _first_book_level(raw_order_book, "Ask")
         bid = _first_book_level(raw_order_book, "Bid")
         orderbook_timestamp = _first_present(
@@ -491,6 +569,55 @@ class FutuGreyMarketOpenDClient:
                     return ret, data
 
             self._trade_context.set_handler(DealHandler())
+
+    def _install_quote_push_handlers(self) -> None:
+        if self._subscribed_symbol is None:
+            return
+        if not hasattr(self._futu, "StockQuoteHandlerBase"):
+            return
+        if not hasattr(self._futu, "OrderBookHandlerBase"):
+            return
+
+        futu = self._futu
+        subscribed_symbol = self._subscribed_symbol
+
+        class QuoteHandler(futu.StockQuoteHandlerBase):
+            def __init__(self, parent: "FutuGreyMarketOpenDClient") -> None:
+                super().__init__()
+                self._parent = parent
+
+            def on_recv_rsp(self, rsp_pb):
+                ret, data = super().on_recv_rsp(rsp_pb)
+                if ret != futu.RET_OK:
+                    return ret, data
+                rows = _rows_from_table(data)
+                with self._parent._push_lock:
+                    for row in rows:
+                        symbol = str(row.get("code") or subscribed_symbol).strip().upper()
+                        self._parent._push_quotes_by_symbol[symbol] = dict(row)
+                        self._parent._push_sequence += 1
+                return ret, data
+
+        class OrderBookHandler(futu.OrderBookHandlerBase):
+            def __init__(self, parent: "FutuGreyMarketOpenDClient") -> None:
+                super().__init__()
+                self._parent = parent
+
+            def on_recv_rsp(self, rsp_pb):
+                ret, data = super().on_recv_rsp(rsp_pb)
+                if ret != futu.RET_OK:
+                    return ret, data
+                if not isinstance(data, dict):
+                    return ret, data
+                symbol = str(data.get("code") or subscribed_symbol).strip().upper()
+                with self._parent._push_lock:
+                    self._parent._push_books_by_symbol[symbol] = dict(data)
+                    self._parent._push_sequence += 1
+                return ret, data
+
+        self._quote_context.set_handler(QuoteHandler(self))
+        self._quote_context.set_handler(OrderBookHandler(self))
+        self._push_handlers_enabled = True
 
 
 def log_signal(logger: JsonlEventLogger, signal: GreyMarketSignal) -> None:
@@ -608,7 +735,16 @@ def run_live(
             client.unlock_trade(logger)
 
         while monotonic() - started_at < timeout_seconds:
-            signal = client.read_signal(rules.symbol)
+            poll_sleep_seconds = max(poll_interval_ms, 1) / 1000.0
+            signal = client.wait_for_push_signal(
+                rules.symbol,
+                timeout_seconds=poll_sleep_seconds,
+                sleep=sleep,
+                monotonic=monotonic,
+            )
+            used_push_signal = signal is not None
+            if signal is None:
+                signal = client.read_signal(rules.symbol)
             log_signal(logger, signal)
             now = monotonic()
             decision = trigger.evaluate(signal, now_monotonic=now)
@@ -635,7 +771,8 @@ def run_live(
 
             if decision.action is TriggerAction.BLOCK:
                 break
-            sleep(max(poll_interval_ms, 1) / 1000.0)
+            if not used_push_signal:
+                sleep(poll_sleep_seconds)
 
     return submitted
 
@@ -777,6 +914,8 @@ def main(argv: list[str] | None = None) -> int:
         max_notional=args.max_notional,
         max_order_attempts=args.max_order_attempts,
         cool_down_ms=args.cool_down_ms,
+        opening_burst_seconds=args.opening_burst_seconds,
+        opening_burst_cool_down_ms=args.opening_burst_cool_down_ms,
         kill_switch_file=args.kill_switch_file,
         remark=args.remark,
     )
@@ -827,6 +966,18 @@ def _add_common_rule_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=300,
         help="Cooldown between order attempts. A 50ms minimum is enforced.",
+    )
+    parser.add_argument(
+        "--opening-burst-seconds",
+        type=float,
+        default=0.0,
+        help="Duration of the first TRADING burst window in seconds.",
+    )
+    parser.add_argument(
+        "--opening-burst-cool-down-ms",
+        type=int,
+        default=50,
+        help="Cooldown used during the opening burst window.",
     )
     parser.add_argument(
         "--kill-switch-file",

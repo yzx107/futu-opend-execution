@@ -11,7 +11,7 @@ import json
 import mimetypes
 import time
 from dataclasses import asdict, is_dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +20,7 @@ from threading import Lock
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from futu_opend_execution._compat import UTC
 from futu_opend_execution.config import RuntimeConfig
 from futu_opend_execution.execution.broker import BrokerError
 from futu_opend_execution.grey_open import (
@@ -82,7 +83,14 @@ def build_app_handler(state: WebState):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             if parsed.path == "/api/health":
-                self._handle_json(lambda: api_health(state))
+                query = parse_qs(parsed.query)
+                self._handle_json(
+                    lambda: api_health(
+                        state,
+                        active=_first_query_value(query, "active", "0"),
+                        symbol=_first_query_value(query, "symbol", ""),
+                    )
+                )
                 return
             if parsed.path == "/api/quote":
                 query = parse_qs(parsed.query)
@@ -194,9 +202,15 @@ def build_app_handler(state: WebState):
     return FutuWebHandler
 
 
-def api_health(state: WebState) -> dict[str, Any]:
+def api_health(
+    state: WebState,
+    *,
+    active: bool | str = False,
+    symbol: str = "",
+) -> dict[str, Any]:
     validate_runtime_config(state.config)
-    return {
+    active_enabled = _truthy(active)
+    payload: dict[str, Any] = {
         "status": "READY",
         "host": state.config.futu_host,
         "port": state.config.futu_port,
@@ -205,6 +219,34 @@ def api_health(state: WebState) -> dict[str, Any]:
         "kill_switch_file": str(state.kill_switch_file),
         "log_file": str(state.log_file),
     }
+    if not active_enabled:
+        return payload
+
+    probe_symbol = symbol.strip() or "HK.00700"
+    started = time.monotonic()
+    try:
+        with FutuNormalTradeClient(state.config) as client:
+            quote = client.read_quote(probe_symbol)
+    except Exception as exc:  # noqa: BLE001
+        payload["status"] = "DEGRADED"
+        payload["opend_quote_probe"] = {
+            "ok": False,
+            "symbol": probe_symbol,
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+            "latency_ms": round((time.monotonic() - started) * 1000, 1),
+        }
+        return payload
+
+    payload["opend_quote_probe"] = {
+        "ok": True,
+        "symbol": quote.symbol,
+        "best_bid": quote.best_bid,
+        "best_ask": quote.best_ask,
+        "last_price": quote.last_price,
+        "latency_ms": round((time.monotonic() - started) * 1000, 1),
+    }
+    return payload
 
 
 def api_quote(state: WebState, *, symbol: str) -> dict[str, Any]:
@@ -474,6 +516,11 @@ def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
             event["source_file"] = str(path)
             events.append(_sanitize(event))
     return events
+
+
+def _truthy(value: Any) -> bool:
+    normalized = str(value).strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
 
 
 def _required_str(payload: dict[str, Any], key: str) -> str:

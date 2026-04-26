@@ -15,6 +15,29 @@
 
 ## 范围
 
+## 项目开发进度（截至 2026-04-25）
+
+### 已完成（MVP）
+
+- [x] 执行层核心数据模型与风控校验
+- [x] 暗盘计划器、模拟成交与下单执行闭环
+- [x] 暗盘开盘触发器（限频、冷却、kill-switch）
+- [x] Normal Trade 下单路径与 Web 控制台
+- [x] JSONL 全链路日志与 replay 回放能力
+- [x] 单元测试覆盖主要交易流程（31 项）
+
+### 进行中
+
+- [ ] OpenD 连接健康检查与自动恢复策略
+- [ ] 实盘前检查项（账户状态/交易上下文）进一步细化
+- [x] CI 中增加多 Python 版本矩阵与兼容性验证（3.10/3.11/3.12）
+
+### 下阶段里程碑
+
+1. 增加连接稳定性策略：retry、timeout、reconnect。
+2. 补齐 paper-trading 工作流与示例脚本。
+3. 增强 Web 控制台的订单状态可观测性（更细粒度状态与错误提示）。
+
 当前已经包含：
 
 - Python 包结构
@@ -207,6 +230,23 @@ PYTHONPATH=src python -m futu_opend_execution.harness 09868 250
 PYTHONPATH=src python -m futu_opend_execution.harness 09868 250 --execute --remark grey-open-snatch
 ```
 
+分批建仓（harness engineering 风格）：
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.harness 09868 1000 \
+  --execute \
+  --tranche-weights 0.5,0.3,0.2 \
+  --tranche-buffer-ticks 0,1,2 \
+  --allow-partial-fill-final-tranche \
+  --remark grey-open-ladder
+```
+
+说明：
+
+- `--tranche-weights` 按权重拆分总数量并顺序执行多笔抢单；
+- `--tranche-buffer-ticks` 可为后续 tranche 设置更激进的价格缓冲；
+- `--allow-partial-fill-final-tranche` 只对最后一笔开放 partial fill，兼顾建仓完成度和成本控制。
+
 ## 暗盘开盘触发器
 
 `grey_open` 是更贴近实盘开盘场景的安全触发器。它会订阅或读取：
@@ -231,6 +271,13 @@ PYTHONPATH=src python -m futu_opend_execution.harness 09868 250 --execute --rema
 
 为了低于 OpenD 文档限频，触发器最多允许 30 秒内 14 次订单尝试，并且强制连续两次尝试至少间隔 50ms。
 
+针对“暗盘第一秒交易量较大”的场景，支持开盘突发窗口参数：
+
+- `--opening-burst-seconds`：首次观察到 `dark_status=TRADING` 后，持续多少秒使用突发模式（默认 0.0 秒，即关闭）
+- `--opening-burst-cool-down-ms`：突发窗口内的下单冷却（默认 50ms）
+
+行情触发机制默认改为 push-first：优先消费 OpenD 推送行情；若短时间内没有收到推送，再自动回退到轮询读取，兼顾速度与稳健性。
+
 ### Live Dry-run
 
 dry-run 是默认模式。它会连接 OpenD，准备行情和交易上下文，记录事件并打印 `would_place_order`，但不会解锁交易，也不会调用 `place_order`。
@@ -243,6 +290,8 @@ PYTHONPATH=src python -m futu_opend_execution.grey_open live HK.01234 \
   --max-notional 12800 \
   --max-order-attempts 3 \
   --cool-down-ms 300 \
+  --opening-burst-seconds 1.0 \
+  --opening-burst-cool-down-ms 50 \
   --kill-switch-file /tmp/futu-grey-open.STOP \
   --log-file logs/grey_open_01234.jsonl
 ```
@@ -363,6 +412,14 @@ Web UI 当前支持：
 - 暗盘抢单 dry-run 评估
 - 全局 kill switch
 - 日志 tail
+- `/api/health?active=1&symbol=00700` 主动探测 OpenD 报价链路
+
+健康检查接口示例：
+
+```bash
+curl "http://127.0.0.1:8765/api/health"
+curl "http://127.0.0.1:8765/api/health?active=1&symbol=00700"
+```
 
 Web UI 的安全边界：
 
