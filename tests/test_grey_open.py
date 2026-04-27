@@ -160,11 +160,15 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
 
     def test_run_live_uses_push_signal_when_available(self) -> None:
         class FakeClient:
+            instances = []
+
             def __init__(self, config) -> None:
                 del config
                 self.supports_push_signals = True
                 self.poll_reads = 0
                 self.push_reads = 0
+                self.trade_context_calls = 0
+                type(self).instances.append(self)
 
             def __enter__(self):
                 return self
@@ -177,6 +181,7 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
 
             def ensure_trade_context(self, logger) -> None:
                 del logger
+                self.trade_context_calls += 1
 
             def unlock_trade(self, logger) -> None:
                 del logger
@@ -218,6 +223,7 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
             )
 
         self.assertEqual(submitted, 1)
+        self.assertEqual(FakeClient.instances[0].trade_context_calls, 0)
 
 
 class GreyMarketReplayTests(unittest.TestCase):

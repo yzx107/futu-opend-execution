@@ -21,6 +21,7 @@ from futu_opend_execution.web_app import (
     api_normal_order,
     api_quote,
     api_replay_run,
+    api_start_live_dry_run,
     api_start_live_real_buy_only,
     api_update_cost_reducer_config,
 )
@@ -261,6 +262,35 @@ class WebAppTests(unittest.TestCase):
 
         self.assertTrue(first["submitted"])
         self.assertEqual(FakeNormalTradeClient.place_count, 1)
+
+    def test_live_dry_run_starts_background_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            payload = {**self._grey_real_payload(), "real": False, "real_mode": False}
+            FakeThread.instances = []
+
+            with patch("futu_opend_execution.web_app.Thread", FakeThread):
+                result = api_start_live_dry_run(state, payload)
+
+            self.assertTrue(result["running"])
+            self.assertEqual(result["execution_mode"], "LIVE_DRY_RUN")
+            self.assertEqual(result["symbol"], "HK.01234")
+            self.assertEqual(len(FakeThread.instances), 1)
+            self.assertTrue(FakeThread.instances[0].started)
+            events = [
+                json.loads(line)
+                for line in state.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(any(event["event"] == "web_live_dry_run_started" for event in events))
+
+    def test_live_dry_run_rejects_active_kill_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            state.kill_switch_file.write_text("stop", encoding="utf-8")
+            payload = {**self._grey_real_payload(), "real": False, "real_mode": False}
+
+            with self.assertRaises(ExecutionValidationError):
+                api_start_live_dry_run(state, payload)
 
     def test_live_real_grey_buy_only_requires_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

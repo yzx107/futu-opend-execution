@@ -116,10 +116,19 @@ function renderEvents(events) {
 }
 
 async function requestJson(url, options = {}) {
+  const { timeoutMs = 15000, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   const response = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+    headers: { "Content-Type": "application/json", ...(fetchOptions.headers || {}) },
+    ...fetchOptions,
+    signal: fetchOptions.signal || controller.signal,
+  }).catch((error) => {
+    if (error.name === "AbortError") {
+      throw new Error("请求超时：OpenD 没有及时返回，请检查连接、标的代码和暗盘行情。");
+    }
+    throw error;
+  }).finally(() => window.clearTimeout(timer));
 
   const text = await response.text();
   let data = null;
@@ -197,6 +206,26 @@ function greyPayload() {
   };
 }
 
+function validateGreyPayload(payload) {
+  if (!payload.symbol) return "请输入暗盘标的代码。";
+  if (!(payload.quantity > 0)) return "请输入暗盘买入数量。";
+  if (!(payload.max_price > 0)) return "请输入暗盘最高限价。";
+  if (!(payload.max_notional > 0)) return "请输入最大金额。";
+  if (payload.max_qty != null && payload.max_qty > 0 && payload.quantity > payload.max_qty) {
+    return "买入数量不能超过最大股数。";
+  }
+  if (payload.max_price * payload.quantity > payload.max_notional) {
+    return "最高限价 x 数量不能超过最大金额。";
+  }
+  return "";
+}
+
+function setGreyStatus(message, level = "") {
+  if (!els.greyState) return;
+  els.greyState.textContent = message;
+  els.greyState.className = level === "error" ? "is-error" : level === "warn" ? "is-warn" : "";
+}
+
 function inventorySeedPayload() {
   return {
     target_quantity: numberOrNull($("#setupQuantity")?.value || $("#greyQuantity").value),
@@ -237,10 +266,10 @@ function syncModes() {
   els.greyModeText.textContent = els.greyDryRun.checked ? "模拟" : "实盘";
   els.greyModeText.className = els.greyDryRun.checked ? "" : "is-live";
   if (els.greyEvaluateBtn) {
-    els.greyEvaluateBtn.textContent = els.greyDryRun.checked ? "评估试跑" : "实盘预检并布防";
+    els.greyEvaluateBtn.textContent = els.greyDryRun.checked ? "试跑一次" : "实盘预检并布防";
   }
   if (els.greyArmBtn) {
-    els.greyArmBtn.textContent = els.greyDryRun.checked ? "开始模拟布防" : "开始实盘抢单";
+    els.greyArmBtn.textContent = els.greyDryRun.checked ? "开始模拟盯盘" : "开始实盘抢单";
     els.greyArmBtn.classList.toggle("danger-button", !els.greyDryRun.checked);
     els.greyArmBtn.classList.toggle("primary-button", els.greyDryRun.checked);
   }
@@ -255,7 +284,7 @@ function syncOrderType() {
 function syncArmed() {
   els.greyState.textContent = state.armed
     ? "已布防：运行期间请盯盘；停止会创建 kill switch"
-    : "默认模拟；切到实盘后只做暗盘买入，不自动卖出/买回";
+    : "试跑一次看当前盘口；模拟布防会后台盯暗盘开盘但不真实下单。";
   els.greyState.className = state.armed ? "is-warn" : "";
   if (state.armed) {
     els.greyArmBtn.textContent = "已布防";
@@ -298,11 +327,21 @@ async function subscribeMarket() {
 }
 
 async function startLiveDryRun() {
+  const payload = greyPayload();
+  const validation = validateGreyPayload(payload);
+  if (validation) {
+    setGreyStatus(validation, "error");
+    addLocalEvent("grey", validation, "error");
+    return;
+  }
+  setGreyStatus("正在启动实时模拟布防，会读取 OpenD 行情但不会真实下单...", "warn");
   const data = await requestJson("/api/grey-open/start-live-dry-run", {
     method: "POST",
-    body: JSON.stringify(greyPayload()),
+    body: JSON.stringify(payload),
   });
-  addLocalEvent("live", `live dry-run ${data.running ? "started" : "stopped"}`, "warn");
+  state.armed = Boolean(data.running);
+  syncArmed();
+  addLocalEvent("live", `实时模拟布防已启动 ${data.symbol || ""}，超时 ${data.timeout_seconds || "--"} 秒`, "warn");
 }
 
 async function stopLiveRun() {
@@ -397,6 +436,12 @@ async function submitNormal(event) {
 async function evaluateGrey(event) {
   event.preventDefault();
   const payload = greyPayload();
+  const validation = validateGreyPayload(payload);
+  if (validation) {
+    setGreyStatus(validation, "error");
+    addLocalEvent("grey", validation, "error");
+    return;
+  }
   if (payload.real) {
     if (payload.confirm_text !== "确认实盘" || !payload.acknowledge_real_order) {
       addLocalEvent("grey", "实盘暗盘抢单前必须输入：确认实盘，并勾选确认框", "warn");
@@ -406,6 +451,12 @@ async function evaluateGrey(event) {
   setBusy(event.submitter, true);
   try {
     const url = payload.real ? "/api/grey-open/start-live-real-buy-only" : "/api/grey/evaluate";
+    setGreyStatus(
+      payload.real
+        ? "正在做实盘暗盘买入预检并启动布防..."
+        : "正在读取 OpenD 暗盘报价和盘口，做一次试跑评估...",
+      "warn",
+    );
     const data = await requestJson(url, {
       method: "POST",
       body: JSON.stringify(payload),
@@ -415,9 +466,15 @@ async function evaluateGrey(event) {
       : `评估完成 ${compactJson(data)}`;
     state.armed = Boolean(payload.real);
     syncArmed();
+    if (!payload.real) {
+      const action = data?.decision?.action || "--";
+      const reason = data?.decision?.reason || "--";
+      setGreyStatus(`试跑完成：${action}，${reason}`, action === "ORDER" ? "warn" : "");
+    }
     addLocalEvent("grey", data?.message || message, payload.real ? "warn" : "ok");
     refreshEvents();
   } catch (error) {
+    setGreyStatus(error.message, "error");
     addLocalEvent("grey", error.message, "error");
   } finally {
     setBusy(event.submitter, false);
@@ -428,14 +485,9 @@ async function toggleArm() {
   if (els.greyDryRun.checked) {
     setBusy(els.greyArmBtn, true);
     try {
-      const data = await requestJson("/api/grey-open/start-live-dry-run", {
-        method: "POST",
-        body: JSON.stringify(greyPayload()),
-      });
-      state.armed = Boolean(data.running);
-      syncArmed();
-      addLocalEvent("grey", "实时模拟布防已开启，不会提交真实订单", "warn");
+      await startLiveDryRun();
     } catch (error) {
+      setGreyStatus(error.message, "error");
       addLocalEvent("grey", error.message, "error");
     } finally {
       setBusy(els.greyArmBtn, false);

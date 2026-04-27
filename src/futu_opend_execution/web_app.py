@@ -438,11 +438,38 @@ def api_subscribe(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
-    _rules_from_payload(state, payload)
+    rules = _rules_from_payload(state, payload)
+    if state.ui_state.live_running and state.live_thread and state.live_thread.is_alive():
+        raise ExecutionValidationError("已有暗盘布防正在运行，请先停止。")
+    if state.kill_switch_file.exists():
+        raise ExecutionValidationError("Kill switch 已开启；清除后才能开始模拟布防。")
+    timeout_seconds = float(payload.get("timeout_seconds") or 600)
+    poll_interval_ms = int(payload.get("poll_interval_ms") or 50)
     state.ui_state.execution_mode = ExecutionMode.LIVE_DRY_RUN
+    state.ui_state.active_symbol = rules.symbol
     state.ui_state.live_running = True
-    _log_event(state, "web_live_dry_run_started", payload=payload)
-    return {"running": True, "execution_mode": state.ui_state.execution_mode.value}
+    _log_event(
+        state,
+        "web_live_dry_run_started",
+        symbol=rules.symbol,
+        rules=rules,
+        timeout_seconds=timeout_seconds,
+        poll_interval_ms=poll_interval_ms,
+    )
+
+    thread = Thread(
+        target=_run_live_dry_run_worker,
+        args=(state, rules, timeout_seconds, poll_interval_ms),
+        daemon=True,
+    )
+    state.live_thread = thread
+    thread.start()
+    return {
+        "running": True,
+        "execution_mode": state.ui_state.execution_mode.value,
+        "symbol": rules.symbol,
+        "timeout_seconds": timeout_seconds,
+    }
 
 
 def api_start_live_real_buy_only(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
@@ -577,6 +604,41 @@ def _run_live_real_buy_worker(
         _log_event(
             state,
             "web_grey_real_buy_error",
+            symbol=rules.symbol,
+            error_type=type(exc).__name__,
+            message=str(exc),
+        )
+    finally:
+        state.ui_state.live_running = False
+
+
+def _run_live_dry_run_worker(
+    state: WebState,
+    rules: GreyMarketTriggerRules,
+    timeout_seconds: float,
+    poll_interval_ms: int,
+) -> None:
+    try:
+        with JsonlEventLogger(state.log_file) as logger:
+            submitted = run_live(
+                rules=rules,
+                logger=logger,
+                real=False,
+                timeout_seconds=timeout_seconds,
+                poll_interval_ms=poll_interval_ms,
+                config=state.config,
+            )
+        _log_event(
+            state,
+            "web_live_dry_run_finished",
+            symbol=rules.symbol,
+            submitted_or_would_submit=submitted,
+        )
+    except Exception as exc:  # noqa: BLE001
+        state.ui_state.last_error = str(exc)
+        _log_event(
+            state,
+            "web_live_dry_run_error",
             symbol=rules.symbol,
             error_type=type(exc).__name__,
             message=str(exc),

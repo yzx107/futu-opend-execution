@@ -129,7 +129,7 @@
           <div class="panel-head">
             <div>
               <h2 id="greyTitle">暗盘抢单</h2>
-              <p id="greyState">默认 dry-run；实盘只做买入布防，不做自动卖出/买回</p>
+              <p id="greyState">试跑一次看当前盘口；模拟布防会后台盯暗盘开盘但不真实下单。</p>
             </div>
             <button class="danger-button small" id="killSwitchBtn" type="button">一键停止</button>
           </div>
@@ -189,8 +189,8 @@
                 <strong id="greyModeText">模拟</strong>
               </label>
               <div class="button-pair">
-                <button class="secondary-button" id="greyEvaluateBtn" type="submit">评估试跑</button>
-                <button class="primary-button" id="greyArmBtn" type="button">开始布防</button>
+                <button class="secondary-button" id="greyEvaluateBtn" type="submit">试跑一次</button>
+                <button class="primary-button" id="greyArmBtn" type="button">开始模拟盯盘</button>
               </div>
             </div>
           </form>

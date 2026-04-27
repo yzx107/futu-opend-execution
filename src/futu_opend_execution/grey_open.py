@@ -900,8 +900,8 @@ def run_live(
 
     with FutuGreyMarketOpenDClient(runtime_config) as client:
         client.subscribe_market(rules.symbol)
-        client.ensure_trade_context(logger)
         if real:
+            client.ensure_trade_context(logger)
             client.unlock_trade(logger)
 
         while monotonic() - started_at < timeout_seconds:

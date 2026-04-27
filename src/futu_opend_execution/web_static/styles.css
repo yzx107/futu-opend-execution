@@ -485,6 +485,10 @@ pre {
   color: var(--amber);
 }
 
+.is-error {
+  color: var(--red);
+}
+
 .is-hidden {
   display: none;
 }
