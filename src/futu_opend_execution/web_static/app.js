@@ -24,7 +24,10 @@ const els = {
   greySymbol: $("#greySymbol"),
   greyDryRun: $("#greyDryRun"),
   greyModeText: $("#greyModeText"),
+  greyConfirmText: $("#greyConfirmText"),
+  greyAckReal: $("#greyAckReal"),
   greyState: $("#greyState"),
+  greyEvaluateBtn: $("#greyEvaluateBtn"),
   greyArmBtn: $("#greyArmBtn"),
   killSwitchBtn: $("#killSwitchBtn"),
   eventsRefreshBtn: $("#eventsRefreshBtn"),
@@ -166,18 +169,31 @@ function normalPayload() {
 }
 
 function greyPayload() {
+  const primarySymbol = $("#greySymbol")?.value || "";
+  const setupSymbol = $("#setupSymbol")?.value || "";
+  const quantity = numberOrNull($("#greyQuantity")?.value) ?? numberOrNull($("#setupQuantity")?.value);
+  const maxPrice = numberOrNull($("#greyMaxPrice")?.value) ?? numberOrNull($("#setupMaxPrice")?.value);
+  const maxNotional = numberOrNull($("#greyMaxNotional")?.value) ?? numberOrNull($("#setupMaxNotional")?.value);
+  const maxAttempts = numberOrNull($("#greyMaxAttempts")?.value) ?? numberOrNull($("#setupMaxOrderAttempts")?.value);
+  const coolDownMs = numberOrNull($("#greyCoolDown")?.value) ?? numberOrNull($("#setupCoolDownMs")?.value);
   return {
-    symbol: ($("#setupSymbol")?.value || $("#greySymbol").value).trim(),
-    max_price: numberOrNull($("#setupMaxPrice")?.value || $("#greyMaxPrice").value),
-    quantity: numberOrNull($("#setupQuantity")?.value || $("#greyQuantity").value),
+    symbol: (primarySymbol || setupSymbol).trim(),
+    max_price: maxPrice,
+    quantity,
     max_qty: numberOrNull($("#setupMaxQty")?.value),
-    max_notional: numberOrNull($("#setupMaxNotional")?.value || $("#greyMaxNotional").value),
-    max_order_attempts: numberOrNull($("#setupMaxOrderAttempts")?.value || $("#greyMaxAttempts").value),
-    cool_down_ms: numberOrNull($("#setupCoolDownMs")?.value || $("#greyCoolDown").value),
+    max_notional: maxNotional,
+    max_order_attempts: maxAttempts,
+    cool_down_ms: coolDownMs,
+    lot_size: numberOrNull($("#setupLotSize")?.value),
     opening_burst_seconds: numberOrNull($("#setupOpeningBurstSeconds")?.value),
     opening_burst_cool_down_ms: numberOrNull($("#setupOpeningBurstCoolDownMs")?.value),
     remark: $("#setupRemark")?.value || "web_grey_open",
     real: !els.greyDryRun.checked,
+    real_mode: !els.greyDryRun.checked,
+    acknowledge_real_order: Boolean(els.greyAckReal?.checked),
+    confirm_text: els.greyConfirmText?.value.trim() || "",
+    timeout_seconds: 600,
+    poll_interval_ms: 50,
   };
 }
 
@@ -218,8 +234,16 @@ function syncModes() {
   els.normalModeText.textContent = els.normalDryRun.checked ? "Dry-run" : "实盘";
   els.normalModeText.className = els.normalDryRun.checked ? "" : "is-live";
   els.normalConfirmWrap.classList.toggle("is-hidden", els.normalDryRun.checked);
-  els.greyModeText.textContent = els.greyDryRun.checked ? "Dry-run" : "实盘";
+  els.greyModeText.textContent = els.greyDryRun.checked ? "模拟" : "实盘";
   els.greyModeText.className = els.greyDryRun.checked ? "" : "is-live";
+  if (els.greyEvaluateBtn) {
+    els.greyEvaluateBtn.textContent = els.greyDryRun.checked ? "评估试跑" : "实盘预检并布防";
+  }
+  if (els.greyArmBtn) {
+    els.greyArmBtn.textContent = els.greyDryRun.checked ? "开始模拟布防" : "开始实盘抢单";
+    els.greyArmBtn.classList.toggle("danger-button", !els.greyDryRun.checked);
+    els.greyArmBtn.classList.toggle("primary-button", els.greyDryRun.checked);
+  }
 }
 
 function syncOrderType() {
@@ -229,9 +253,15 @@ function syncOrderType() {
 }
 
 function syncArmed() {
-  els.greyState.textContent = state.armed ? "已布防" : "未布防";
+  els.greyState.textContent = state.armed
+    ? "已布防：运行期间请盯盘；停止会创建 kill switch"
+    : "默认模拟；切到实盘后只做暗盘买入，不自动卖出/买回";
   els.greyState.className = state.armed ? "is-warn" : "";
-  els.greyArmBtn.textContent = state.armed ? "撤防" : "布防";
+  if (state.armed) {
+    els.greyArmBtn.textContent = "已布防";
+  } else {
+    syncModes();
+  }
 }
 
 async function loadHealth() {
@@ -327,7 +357,7 @@ async function refreshQuote(symbol, target) {
     return;
   }
 
-    const data = await requestJson(`/api/quote?symbol=${encodeURIComponent(cleanSymbol)}`);
+  const data = await requestJson(`/api/quote?symbol=${encodeURIComponent(cleanSymbol)}`);
   const quote = data?.quote || {};
   const price = quote.last_price ?? data?.price ?? data?.last_price ?? data?.last ?? "--";
   const bid = quote.best_bid ?? data?.bid ?? quote.bid;
@@ -366,13 +396,26 @@ async function submitNormal(event) {
 
 async function evaluateGrey(event) {
   event.preventDefault();
+  const payload = greyPayload();
+  if (payload.real) {
+    if (payload.confirm_text !== "确认实盘" || !payload.acknowledge_real_order) {
+      addLocalEvent("grey", "实盘暗盘抢单前必须输入：确认实盘，并勾选确认框", "warn");
+      return;
+    }
+  }
   setBusy(event.submitter, true);
   try {
-    const data = await requestJson("/api/grey/evaluate", {
+    const url = payload.real ? "/api/grey-open/start-live-real-buy-only" : "/api/grey/evaluate";
+    const data = await requestJson(url, {
       method: "POST",
-      body: JSON.stringify(greyPayload()),
+      body: JSON.stringify(payload),
     });
-    addLocalEvent("grey", data?.message || `评估完成 ${compactJson(data)}`, "ok");
+    const message = payload.real
+      ? `实盘暗盘买入已布防 ${data.symbol || ""}，最大尝试 ${data.max_order_attempts || "--"}，超时 ${data.timeout_seconds || "--"} 秒`
+      : `评估完成 ${compactJson(data)}`;
+    state.armed = Boolean(payload.real);
+    syncArmed();
+    addLocalEvent("grey", data?.message || message, payload.real ? "warn" : "ok");
     refreshEvents();
   } catch (error) {
     addLocalEvent("grey", error.message, "error");
@@ -381,10 +424,25 @@ async function evaluateGrey(event) {
   }
 }
 
-function toggleArm() {
-  state.armed = !state.armed;
-  syncArmed();
-  addLocalEvent("grey", state.armed ? "暗盘抢单已布防" : "暗盘抢单已撤防", state.armed ? "warn" : "ok");
+async function toggleArm() {
+  if (els.greyDryRun.checked) {
+    setBusy(els.greyArmBtn, true);
+    try {
+      const data = await requestJson("/api/grey-open/start-live-dry-run", {
+        method: "POST",
+        body: JSON.stringify(greyPayload()),
+      });
+      state.armed = Boolean(data.running);
+      syncArmed();
+      addLocalEvent("grey", "实时模拟布防已开启，不会提交真实订单", "warn");
+    } catch (error) {
+      addLocalEvent("grey", error.message, "error");
+    } finally {
+      setBusy(els.greyArmBtn, false);
+    }
+    return;
+  }
+  evaluateGrey(new Event("submit"));
 }
 
 async function killSwitch() {

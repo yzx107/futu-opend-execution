@@ -465,7 +465,7 @@ CLI 对非工程师不够友好，所以仓库提供了本地 Web UI。它默认
 
 - 顶部：OpenD 状态、最近报价、事件数量
 - 左侧：正常交易
-- 右侧：暗盘抢单 dry-run 评估
+- 右侧：暗盘抢单评估、live dry-run 和受保护的实盘 buy-only 布防
 - 底部：JSONL 事件日志
 
 启动：
@@ -493,6 +493,7 @@ Web UI 当前支持：
 - 实盘确认短语：`确认实盘`
 - 下单后轮询订单终态
 - 暗盘抢单 dry-run 评估
+- 暗盘抢单 `LIVE_REAL_BUY_ONLY` 布防：只提交开盘买入限价单，不触发成本优化器真实卖出/买回
 - 暗盘 session 参数校验和 live dry-run 状态控制
 - 50/50 inventory seed/reset/reconcile
 - 成本优化器参数面板、preset 入口和 manual approval 控件
@@ -513,8 +514,9 @@ Web UI 的安全边界：
 
 - 页面默认 dry-run
 - 实盘必须同时满足 `.env` 中 `FUTU_ALLOW_REAL_TRADE=1` 和页面切换到实盘
+- 暗盘实盘 buy-only 还要求 `FUTU_TRADE_PASSWORD` 已配置、确认 checkbox 已勾选、确认短语完全等于 `确认实盘`
 - 实盘提交前必须输入 `确认实盘`
-- 后端会重新校验价格、数量、订单类型、`max_notional` 和 kill switch
+- 暗盘实盘 buy-only 后端会重新校验 lot alignment、`max_qty`、`max_notional`、`max_order_attempts`、订单限频、重复点击和 kill switch
 - 同一真实订单摘要 3 秒内重复点击会被后端拦截
 - 成本优化器真实 sell/rebuy 必须走 `/api/cost-reducer/approve-intent`，后端会再次校验确认短语、ack checkbox、real mode、库存、盘口、spread、stale quote、重复 intent 和限频
 - 自动成本优化器真实执行默认关闭；缺少任一状态时后端记录 blocked event 并拒绝

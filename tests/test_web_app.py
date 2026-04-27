@@ -21,6 +21,7 @@ from futu_opend_execution.web_app import (
     api_normal_order,
     api_quote,
     api_replay_run,
+    api_start_live_real_buy_only,
     api_update_cost_reducer_config,
 )
 
@@ -70,15 +71,53 @@ class FailingNormalTradeClient:
         raise RuntimeError("OpenD unreachable")
 
 
+class FakeThread:
+    instances: list["FakeThread"] = []
+
+    def __init__(self, *, target, args, daemon) -> None:
+        self.target = target
+        self.args = args
+        self.daemon = daemon
+        self.started = False
+        type(self).instances.append(self)
+
+    def start(self) -> None:
+        self.started = True
+
+    def is_alive(self) -> bool:
+        return self.started
+
+
 def make_state(temp_dir: str, *, allow_real_trade: bool = False) -> WebState:
     return WebState(
-        config=RuntimeConfig(allow_real_trade=allow_real_trade),
+        config=RuntimeConfig(
+            allow_real_trade=allow_real_trade,
+            futu_trade_password="pw" if allow_real_trade else None,
+        ),
         log_file=Path(temp_dir) / "web.jsonl",
         kill_switch_file=Path(temp_dir) / "KILL",
     )
 
 
 class WebAppTests(unittest.TestCase):
+    def _grey_real_payload(self) -> dict:
+        return {
+            "symbol": "HK.01234",
+            "quantity": 1000,
+            "max_price": "10",
+            "max_qty": 1000,
+            "max_notional": "10000",
+            "max_order_attempts": 3,
+            "cool_down_ms": 300,
+            "lot_size": 100,
+            "real": True,
+            "real_mode": True,
+            "acknowledge_real_order": True,
+            "confirm_text": REAL_CONFIRM_TEXT,
+            "timeout_seconds": 1,
+            "poll_interval_ms": 50,
+        }
+
     def test_health_reports_kill_switch_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = make_state(temp_dir)
@@ -222,6 +261,85 @@ class WebAppTests(unittest.TestCase):
 
         self.assertTrue(first["submitted"])
         self.assertEqual(FakeNormalTradeClient.place_count, 1)
+
+    def test_live_real_grey_buy_only_requires_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir, allow_real_trade=False)
+
+            with self.assertRaises(ExecutionValidationError):
+                api_start_live_real_buy_only(state, self._grey_real_payload())
+
+            events = [
+                json.loads(line)
+                for line in state.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(any(event["event"] == "blocked_real_order" for event in events))
+
+    def test_live_real_grey_buy_only_requires_trade_password(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = WebState(
+                config=RuntimeConfig(allow_real_trade=True, futu_trade_password=None),
+                log_file=Path(temp_dir) / "web.jsonl",
+                kill_switch_file=Path(temp_dir) / "KILL",
+            )
+
+            with self.assertRaises(ExecutionValidationError):
+                api_start_live_real_buy_only(state, self._grey_real_payload())
+
+            events = [
+                json.loads(line)
+                for line in state.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(any(event["event"] == "blocked_real_order" for event in events))
+
+    def test_live_real_grey_buy_only_requires_ack_and_phrase(self) -> None:
+        cases = [
+            {"acknowledge_real_order": False, "confirm_text": REAL_CONFIRM_TEXT},
+            {"acknowledge_real_order": True, "confirm_text": "wrong"},
+            {"acknowledge_real_order": True, "confirm_text": REAL_CONFIRM_TEXT, "real_mode": False},
+        ]
+        for updates in cases:
+            with self.subTest(updates=updates):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    state = make_state(temp_dir, allow_real_trade=True)
+                    payload = {**self._grey_real_payload(), **updates}
+
+                    with self.assertRaises(ExecutionValidationError):
+                        api_start_live_real_buy_only(state, payload)
+
+                    events = [
+                        json.loads(line)
+                        for line in state.log_file.read_text(encoding="utf-8").splitlines()
+                    ]
+                    self.assertTrue(any(event["event"] == "blocked_real_order" for event in events))
+
+    def test_live_real_grey_buy_only_rejects_kill_switch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir, allow_real_trade=True)
+            state.kill_switch_file.write_text("stop", encoding="utf-8")
+
+            with self.assertRaises(ExecutionValidationError):
+                api_start_live_real_buy_only(state, self._grey_real_payload())
+
+    def test_live_real_grey_buy_only_starts_guarded_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir, allow_real_trade=True)
+            FakeThread.instances = []
+
+            with patch("futu_opend_execution.web_app.Thread", FakeThread):
+                result = api_start_live_real_buy_only(state, self._grey_real_payload())
+
+            self.assertTrue(result["running"])
+            self.assertEqual(result["execution_mode"], "LIVE_REAL_BUY_ONLY")
+            self.assertEqual(result["symbol"], "HK.01234")
+            self.assertEqual(len(FakeThread.instances), 1)
+            self.assertTrue(FakeThread.instances[0].started)
+            self.assertTrue(FakeThread.instances[0].daemon)
+            events = [
+                json.loads(line)
+                for line in state.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(any(event["event"] == "web_grey_real_buy_armed" for event in events))
 
     def test_cost_reducer_config_endpoint_accepts_spread_and_vol_params(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -449,9 +567,13 @@ class WebAppTests(unittest.TestCase):
             "inventorySection",
             "ordersFillsSection",
             "costReducerConfirmText",
+            "greyConfirmText",
+            "greyAckReal",
             "realModeStatus",
             "maxSpreadBps",
             "replaySection",
+            "实盘暗盘抢单",
+            "50/50 持仓",
         ):
             self.assertIn(token, html)
 

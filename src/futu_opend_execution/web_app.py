@@ -16,7 +16,7 @@ from decimal import Decimal
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -29,6 +29,7 @@ from futu_opend_execution.grey_open import (
     GreyMarketTriggerRules,
     JsonlEventLogger,
     log_signal,
+    run_live,
     run_replay,
 )
 from futu_opend_execution.inventory import split_inventory_targets
@@ -102,6 +103,7 @@ class WebState:
         self.replay_summary: dict[str, Any] | None = None
         self.latest_market_state: dict[str, Any] | None = None
         self.latest_decision: dict[str, Any] | None = None
+        self.live_thread: Thread | None = None
 
     def check_duplicate_real_order(self, signature: str) -> None:
         now = time.monotonic()
@@ -213,6 +215,9 @@ def build_app_handler(state: WebState):
                 return
             if parsed.path == "/api/grey-open/start-live-dry-run":
                 self._handle_json(lambda: api_start_live_dry_run(state, self._read_json()))
+                return
+            if parsed.path == "/api/grey-open/start-live-real-buy-only":
+                self._handle_json(lambda: api_start_live_real_buy_only(state, self._read_json()))
                 return
             if parsed.path == "/api/grey-open/stop":
                 self._handle_json(lambda: api_stop_live_run(state))
@@ -440,10 +445,144 @@ def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str
     return {"running": True, "execution_mode": state.ui_state.execution_mode.value}
 
 
+def api_start_live_real_buy_only(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
+    rules = _rules_from_payload(state, payload)
+    if state.ui_state.live_running and state.live_thread and state.live_thread.is_alive():
+        _raise_blocked_real_order(state, "已有暗盘实盘布防正在运行", symbol=rules.symbol)
+    if not state.config.allow_real_trade:
+        _raise_blocked_real_order(state, "环境未开启 FUTU_ALLOW_REAL_TRADE=1", symbol=rules.symbol)
+    if not state.config.futu_trade_password:
+        _raise_blocked_real_order(state, "FUTU_TRADE_PASSWORD 未配置，无法解锁实盘交易", symbol=rules.symbol)
+    if not _truthy(payload.get("real_mode", payload.get("real", False))):
+        _raise_blocked_real_order(state, "页面必须切换到实盘模式", symbol=rules.symbol)
+    if not _truthy(payload.get("acknowledge_real_order", False)):
+        _raise_blocked_real_order(state, "必须勾选实盘暗盘抢单确认框", symbol=rules.symbol)
+    if str(payload.get("confirm_text") or "") != REAL_CONFIRM_TEXT:
+        _raise_blocked_real_order(
+            state,
+            f"实盘暗盘抢单需要输入确认短语：{REAL_CONFIRM_TEXT}",
+            symbol=rules.symbol,
+        )
+    if state.kill_switch_file.exists():
+        _raise_blocked_real_order(state, "Kill switch 已开启，禁止实盘暗盘抢单", symbol=rules.symbol)
+
+    lot_size = int(payload.get("lot_size") or 1)
+    client_intent_id = "|".join(
+        [
+            "web-grey-real-buy",
+            rules.symbol,
+            str(rules.quantity),
+            str(rules.max_price),
+            str(rules.max_notional),
+        ]
+    )
+    preflight_intent = GreyMarketRealOrderIntent(
+        symbol=rules.symbol,
+        side=GreyOrderSide.BUY,
+        quantity=rules.quantity,
+        limit_price=rules.max_price,
+        role=GreyOrderRole.CORE_BUY,
+        source=GreyOrderSource.OPEN_TRIGGER,
+        remark=rules.remark,
+        client_intent_id=client_intent_id,
+    )
+    try:
+        RealOrderGuard(
+            runtime_config=state.config,
+            kill_switch_file=state.kill_switch_file,
+            max_qty=rules.max_qty,
+            max_notional=rules.max_notional,
+            lot_size=lot_size,
+            max_order_attempts=rules.max_order_attempts,
+        ).validate(
+            preflight_intent,
+            execution_mode=ExecutionMode.LIVE_REAL_BUY_ONLY,
+            confirm_text=str(payload.get("confirm_text") or ""),
+            now_monotonic=time.monotonic(),
+        )
+        state.check_duplicate_real_order(client_intent_id)
+    except ExecutionValidationError as exc:
+        _raise_blocked_real_order(
+            state,
+            str(exc),
+            symbol=rules.symbol,
+            intent=preflight_intent,
+        )
+
+    timeout_seconds = float(payload.get("timeout_seconds") or 600)
+    poll_interval_ms = int(payload.get("poll_interval_ms") or 50)
+    state.ui_state.execution_mode = ExecutionMode.LIVE_REAL_BUY_ONLY
+    state.ui_state.active_symbol = rules.symbol
+    state.ui_state.live_running = True
+    _log_event(
+        state,
+        "web_grey_real_buy_armed",
+        symbol=rules.symbol,
+        rules=rules,
+        timeout_seconds=timeout_seconds,
+        poll_interval_ms=poll_interval_ms,
+    )
+
+    thread = Thread(
+        target=_run_live_real_buy_worker,
+        args=(state, rules, timeout_seconds, poll_interval_ms),
+        daemon=True,
+    )
+    state.live_thread = thread
+    thread.start()
+    return {
+        "running": True,
+        "execution_mode": state.ui_state.execution_mode.value,
+        "symbol": rules.symbol,
+        "max_order_attempts": rules.max_order_attempts,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
 def api_stop_live_run(state: WebState) -> dict[str, Any]:
     state.ui_state.live_running = False
-    _log_event(state, "web_live_run_stopped")
-    return {"running": False}
+    if not state.kill_switch_file.exists():
+        state.kill_switch_file.write_text(
+            f"web_stop_at={datetime.now(UTC).isoformat()}\n",
+            encoding="utf-8",
+        )
+    _log_event(state, "web_live_run_stopped", kill_switch_file=str(state.kill_switch_file))
+    return {"running": False, "kill_switch": state.kill_switch_file.exists()}
+
+
+def _run_live_real_buy_worker(
+    state: WebState,
+    rules: GreyMarketTriggerRules,
+    timeout_seconds: float,
+    poll_interval_ms: int,
+) -> None:
+    try:
+        with JsonlEventLogger(state.log_file) as logger:
+            submitted = run_live(
+                rules=rules,
+                logger=logger,
+                real=True,
+                timeout_seconds=timeout_seconds,
+                poll_interval_ms=poll_interval_ms,
+                config=state.config,
+            )
+        _log_event(
+            state,
+            "web_grey_real_buy_finished",
+            symbol=rules.symbol,
+            submitted=submitted,
+        )
+    except Exception as exc:  # noqa: BLE001
+        state.ui_state.last_error = str(exc)
+        _log_event(
+            state,
+            "web_grey_real_buy_error",
+            symbol=rules.symbol,
+            error_type=type(exc).__name__,
+            message=str(exc),
+        )
+    finally:
+        state.ui_state.live_running = False
 
 
 def api_cost_reducer_config(state: WebState) -> dict[str, Any]:

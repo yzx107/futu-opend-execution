@@ -129,7 +129,7 @@
           <div class="panel-head">
             <div>
               <h2 id="greyTitle">暗盘抢单</h2>
-              <p id="greyState">未布防</p>
+              <p id="greyState">默认 dry-run；实盘只做买入布防，不做自动卖出/买回</p>
             </div>
             <button class="danger-button small" id="killSwitchBtn" type="button">一键停止</button>
           </div>
@@ -167,15 +167,30 @@
               </label>
             </div>
 
+            <div class="real-warning">
+              实盘暗盘抢单会在 OpenD 暗盘状态变为 TRADING 且价格/金额/次数风控通过时提交真实限价买单。请确认标的、数量、最高价和最大金额。
+            </div>
+
+            <div class="grid-2">
+              <label>
+                <span>实盘确认短语</span>
+                <input id="greyConfirmText" name="confirm_text" autocomplete="off" placeholder="输入：确认实盘">
+              </label>
+              <label class="inline-check">
+                <input id="greyAckReal" name="acknowledge_real_order" type="checkbox">
+                我确认可能提交真实暗盘买单
+              </label>
+            </div>
+
             <div class="action-row">
               <label class="switch">
                 <input id="greyDryRun" name="dry_run" type="checkbox" checked>
                 <span></span>
-                <strong id="greyModeText">Dry-run</strong>
+                <strong id="greyModeText">模拟</strong>
               </label>
               <div class="button-pair">
                 <button class="secondary-button" id="greyEvaluateBtn" type="submit">评估试跑</button>
-                <button class="primary-button" id="greyArmBtn" type="button">布防</button>
+                <button class="primary-button" id="greyArmBtn" type="button">开始布防</button>
               </div>
             </div>
           </form>
@@ -185,190 +200,190 @@
       <section class="console-grid" aria-label="暗盘成本优化控制台">
         <section class="panel setup-panel" aria-labelledby="sessionSetupTitle">
           <div class="panel-head compact">
-            <h2 id="sessionSetupTitle">Session Setup</h2>
+            <h2 id="sessionSetupTitle">暗盘会话参数</h2>
           </div>
           <div class="trade-form">
             <div class="grid-3">
-              <label><span>symbol</span><input id="setupSymbol" name="symbol" value="HK.01234"></label>
-              <label><span>target quantity</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
-              <label><span>lot size</span><input id="setupLotSize" name="lot_size" type="number" value="100"></label>
+              <label><span>标的代码</span><input id="setupSymbol" name="symbol" value="HK.01234"></label>
+              <label><span>目标数量</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
+              <label><span>每手股数</span><input id="setupLotSize" name="lot_size" type="number" value="100"></label>
             </div>
             <div class="grid-3">
-              <label><span>max price</span><input id="setupMaxPrice" name="max_price" type="number" step="0.001"></label>
-              <label><span>max qty</span><input id="setupMaxQty" name="max_qty" type="number" value="1000"></label>
-              <label><span>max notional</span><input id="setupMaxNotional" name="max_notional" type="number" step="0.01"></label>
+              <label><span>最高限价</span><input id="setupMaxPrice" name="max_price" type="number" step="0.001"></label>
+              <label><span>最大股数</span><input id="setupMaxQty" name="max_qty" type="number" value="1000"></label>
+              <label><span>最大金额</span><input id="setupMaxNotional" name="max_notional" type="number" step="0.01"></label>
             </div>
             <div class="grid-3">
-              <label><span>max order attempts</span><input id="setupMaxOrderAttempts" name="max_order_attempts" type="number" value="3"></label>
-              <label><span>cool down ms</span><input id="setupCoolDownMs" name="cool_down_ms" type="number" value="300"></label>
-              <label><span>remark</span><input id="setupRemark" name="remark" value="web_grey_open"></label>
+              <label><span>最大下单次数</span><input id="setupMaxOrderAttempts" name="max_order_attempts" type="number" value="3"></label>
+              <label><span>冷却毫秒</span><input id="setupCoolDownMs" name="cool_down_ms" type="number" value="300"></label>
+              <label><span>订单备注</span><input id="setupRemark" name="remark" value="web_grey_open"></label>
             </div>
             <div class="grid-3">
-              <label><span>opening burst seconds</span><input id="setupOpeningBurstSeconds" name="opening_burst_seconds" type="number" step="0.1" value="0"></label>
-              <label><span>opening burst cool down ms</span><input id="setupOpeningBurstCoolDownMs" name="opening_burst_cool_down_ms" type="number" value="50"></label>
-              <label><span>kill switch path</span><input id="setupKillSwitchPath" name="kill_switch_path" value="/tmp/futu-opend-execution.KILL"></label>
+              <label><span>开盘突发秒数</span><input id="setupOpeningBurstSeconds" name="opening_burst_seconds" type="number" step="0.1" value="0"></label>
+              <label><span>突发冷却毫秒</span><input id="setupOpeningBurstCoolDownMs" name="opening_burst_cool_down_ms" type="number" value="50"></label>
+              <label><span>Kill switch 路径</span><input id="setupKillSwitchPath" name="kill_switch_path" value="/tmp/futu-opend-execution.KILL"></label>
             </div>
             <div class="button-pair wrap">
-              <button class="secondary-button" id="validateConfigBtn" type="button">Validate config</button>
-              <button class="secondary-button" id="subscribeBtn" type="button">Subscribe market</button>
-              <button class="secondary-button" id="dryRunOpenTriggerBtn" type="button">Dry-run open trigger</button>
-              <button class="primary-button" id="startLiveDryRunBtn" type="button">Start live dry-run</button>
-              <button class="small-button" id="stopLiveRunBtn" type="button">Stop live run</button>
-              <button class="danger-button small" id="createKillSwitchBtn" type="button">Create kill switch</button>
-              <button class="small-button" id="clearKillSwitchBtn" type="button">Clear kill switch</button>
+              <button class="secondary-button" id="validateConfigBtn" type="button">校验配置</button>
+              <button class="secondary-button" id="subscribeBtn" type="button">订阅行情</button>
+              <button class="secondary-button" id="dryRunOpenTriggerBtn" type="button">暗盘试跑</button>
+              <button class="primary-button" id="startLiveDryRunBtn" type="button">开始实时模拟</button>
+              <button class="small-button" id="stopLiveRunBtn" type="button">停止运行</button>
+              <button class="danger-button small" id="createKillSwitchBtn" type="button">创建 kill switch</button>
+              <button class="small-button" id="clearKillSwitchBtn" type="button">清除 kill switch</button>
             </div>
           </div>
         </section>
 
         <section class="panel inventory-panel" id="inventorySection" aria-labelledby="inventoryTitle">
           <div class="panel-head compact">
-            <h2 id="inventoryTitle">50/50 Inventory</h2>
+            <h2 id="inventoryTitle">50/50 持仓</h2>
           </div>
           <div class="grid-3">
-            <label><span>core ratio</span><input id="inventoryCoreRatio" value="0.5"></label>
-            <label><span>trading ratio</span><input id="inventoryTradingRatio" value="0.5"></label>
-            <label><span>anchor price</span><input id="inventoryAnchorPrice" type="number" step="0.001"></label>
+            <label><span>核心仓比例</span><input id="inventoryCoreRatio" value="0.5"></label>
+            <label><span>交易仓比例</span><input id="inventoryTradingRatio" value="0.5"></label>
+            <label><span>锚定价格</span><input id="inventoryAnchorPrice" type="number" step="0.001"></label>
           </div>
           <dl class="data-grid" id="inventorySnapshot">
-            <dt>core target</dt><dd id="coreTarget">--</dd>
-            <dt>trading target</dt><dd id="tradingTarget">--</dd>
-            <dt>core filled</dt><dd id="coreFilled">--</dd>
-            <dt>trading filled</dt><dd id="tradingFilled">--</dd>
-            <dt>trading sold</dt><dd id="tradingSold">--</dd>
-            <dt>trading rebought</dt><dd id="tradingRebought">--</dd>
-            <dt>current position</dt><dd id="currentPosition">--</dd>
-            <dt>economic cost basis</dt><dd id="economicCostBasis">--</dd>
-            <dt>realized trading P&L</dt><dd id="realizedTradingPnl">--</dd>
+            <dt>核心目标</dt><dd id="coreTarget">--</dd>
+            <dt>交易目标</dt><dd id="tradingTarget">--</dd>
+            <dt>核心已成</dt><dd id="coreFilled">--</dd>
+            <dt>交易已成</dt><dd id="tradingFilled">--</dd>
+            <dt>交易已卖</dt><dd id="tradingSold">--</dd>
+            <dt>交易买回</dt><dd id="tradingRebought">--</dd>
+            <dt>当前仓位</dt><dd id="currentPosition">--</dd>
+            <dt>经济成本</dt><dd id="economicCostBasis">--</dd>
+            <dt>交易已实现盈亏</dt><dd id="realizedTradingPnl">--</dd>
           </dl>
           <div class="button-pair wrap">
-            <button class="secondary-button" id="seedInventoryBtn" type="button">Seed dry-run inventory</button>
-            <button class="small-button" id="resetInventoryBtn" type="button">Reset dry-run inventory</button>
-            <button class="secondary-button" id="reconcileInventoryBtn" type="button">Reconcile from fills</button>
-            <button class="small-button" id="exportInventoryBtn" type="button">Export inventory snapshot</button>
+            <button class="secondary-button" id="seedInventoryBtn" type="button">种子模拟持仓</button>
+            <button class="small-button" id="resetInventoryBtn" type="button">重置模拟持仓</button>
+            <button class="secondary-button" id="reconcileInventoryBtn" type="button">按成交回补持仓</button>
+            <button class="small-button" id="exportInventoryBtn" type="button">导出持仓快照</button>
           </div>
         </section>
 
         <section class="panel cost-panel" id="costReducerSection" aria-labelledby="costReducerTitle">
           <div class="panel-head compact">
-            <h2 id="costReducerTitle">Cost Reducer Parameters</h2>
+            <h2 id="costReducerTitle">成本优化参数</h2>
           </div>
           <form id="costReducerConfigForm" class="trade-form">
             <div class="grid-3">
-              <label class="inline-check"><input id="costReducerEnabled" name="cost_reducer_enabled" type="checkbox"> cost_reducer_enabled</label>
-              <label class="inline-check"><input id="dryRunOnly" name="dry_run_only" type="checkbox" checked> dry_run_only</label>
-              <label class="inline-check"><input id="manualApprovalRequired" name="manual_approval_required" type="checkbox" checked> manual_approval_required</label>
+              <label class="inline-check"><input id="costReducerEnabled" name="cost_reducer_enabled" type="checkbox"> 启用成本优化</label>
+              <label class="inline-check"><input id="dryRunOnly" name="dry_run_only" type="checkbox" checked> 仅模拟</label>
+              <label class="inline-check"><input id="manualApprovalRequired" name="manual_approval_required" type="checkbox" checked> 必须手动批准</label>
             </div>
             <div class="grid-3">
-              <label><span>max_spread_bps</span><input id="maxSpreadBps" name="max_spread_bps" value="20"></label>
-              <label><span>min_turnover_to_activate</span><input id="minTurnoverToActivate" name="min_turnover_to_activate" value="0"></label>
-              <label><span>min_ticks_to_activate</span><input id="minTicksToActivate" name="min_ticks_to_activate" type="number" value="5"></label>
+              <label><span>最大价差 bps</span><input id="maxSpreadBps" name="max_spread_bps" value="20"></label>
+              <label><span>启动最小成交额</span><input id="minTurnoverToActivate" name="min_turnover_to_activate" value="0"></label>
+              <label><span>启动最小 tick</span><input id="minTicksToActivate" name="min_ticks_to_activate" type="number" value="5"></label>
             </div>
             <div class="grid-3">
-              <label><span>overextension_vol_multiple</span><input id="overextensionVolMultiple" name="overextension_vol_multiple" value="2.0"></label>
-              <label><span>high_pullback_vol_multiple</span><input id="highPullbackVolMultiple" name="high_pullback_vol_multiple" value="0.5"></label>
-              <label><span>rebuy_anchor_vol_band</span><input id="rebuyAnchorVolBand" name="rebuy_anchor_vol_band" value="1.0"></label>
+              <label><span>冲高波动倍数</span><input id="overextensionVolMultiple" name="overextension_vol_multiple" value="2.0"></label>
+              <label><span>高位回撤倍数</span><input id="highPullbackVolMultiple" name="high_pullback_vol_multiple" value="0.5"></label>
+              <label><span>买回锚点带宽</span><input id="rebuyAnchorVolBand" name="rebuy_anchor_vol_band" value="1.0"></label>
             </div>
             <div class="grid-3">
-              <label><span>estimated_roundtrip_cost_bps</span><input id="estimatedRoundtripCostBps" name="estimated_roundtrip_cost_bps" value="10"></label>
-              <label><span>safety_buffer_bps</span><input id="safetyBufferBps" name="safety_buffer_bps" value="5"></label>
-              <label><span>max_sell_total_position_ratio</span><input id="maxSellTotalPositionRatio" name="max_sell_total_position_ratio" value="0.25"></label>
+              <label><span>往返成本 bps</span><input id="estimatedRoundtripCostBps" name="estimated_roundtrip_cost_bps" value="10"></label>
+              <label><span>安全垫 bps</span><input id="safetyBufferBps" name="safety_buffer_bps" value="5"></label>
+              <label><span>最大卖出总仓位比例</span><input id="maxSellTotalPositionRatio" name="max_sell_total_position_ratio" value="0.25"></label>
             </div>
             <div class="grid-3">
-              <label><span>max_round_trips</span><input id="maxRoundTrips" name="max_round_trips" type="number" value="1"></label>
-              <label><span>max_cost_reducer_orders_per_session</span><input id="maxCostReducerOrdersPerSession" name="max_cost_reducer_orders_per_session" type="number" value="1"></label>
-              <label><span>min_seconds_between_cost_reducer_orders</span><input id="minSecondsBetweenCostReducerOrders" name="min_seconds_between_cost_reducer_orders" value="5"></label>
+              <label><span>最大往返次数</span><input id="maxRoundTrips" name="max_round_trips" type="number" value="1"></label>
+              <label><span>单场最大优化订单</span><input id="maxCostReducerOrdersPerSession" name="max_cost_reducer_orders_per_session" type="number" value="1"></label>
+              <label><span>优化订单间隔秒</span><input id="minSecondsBetweenCostReducerOrders" name="min_seconds_between_cost_reducer_orders" value="5"></label>
             </div>
             <div class="grid-3">
-              <label><span>sell_limit_offset_ticks</span><input id="sellLimitOffsetTicks" name="sell_limit_offset_ticks" type="number" value="0"></label>
-              <label><span>rebuy_limit_offset_ticks</span><input id="rebuyLimitOffsetTicks" name="rebuy_limit_offset_ticks" type="number" value="0"></label>
-              <label><span>min_expected_edge_bps</span><input id="minExpectedEdgeBps" name="min_expected_edge_bps" value="0"></label>
+              <label><span>卖出限价 tick 偏移</span><input id="sellLimitOffsetTicks" name="sell_limit_offset_ticks" type="number" value="0"></label>
+              <label><span>买回限价 tick 偏移</span><input id="rebuyLimitOffsetTicks" name="rebuy_limit_offset_ticks" type="number" value="0"></label>
+              <label><span>最小预期边际 bps</span><input id="minExpectedEdgeBps" name="min_expected_edge_bps" value="0"></label>
             </div>
             <div class="grid-3">
-              <label><span>max_sell_slippage_bps</span><input id="maxSellSlippageBps" name="max_sell_slippage_bps" value="20"></label>
-              <label><span>max_rebuy_slippage_bps</span><input id="maxRebuySlippageBps" name="max_rebuy_slippage_bps" value="20"></label>
-              <label class="inline-check"><input id="enableAutoCostReducer" name="enable_auto_cost_reducer" type="checkbox"> enable_auto_cost_reducer</label>
+              <label><span>卖出最大滑点 bps</span><input id="maxSellSlippageBps" name="max_sell_slippage_bps" value="20"></label>
+              <label><span>买回最大滑点 bps</span><input id="maxRebuySlippageBps" name="max_rebuy_slippage_bps" value="20"></label>
+              <label class="inline-check"><input id="enableAutoCostReducer" name="enable_auto_cost_reducer" type="checkbox"> 实验性自动成本优化</label>
             </div>
             <div class="button-pair wrap">
-              <button class="primary-button" id="applyCostParamsBtn" type="submit">Apply parameters</button>
-              <button class="small-button" id="savePresetBtn" type="button">Save preset</button>
-              <button class="small-button" id="loadPresetBtn" type="button">Load preset</button>
-              <button class="secondary-button" id="conservativePresetBtn" type="button">Reset to conservative defaults</button>
-              <button class="secondary-button" id="aggressivePresetBtn" type="button">Reset to aggressive dry-run defaults</button>
+              <button class="primary-button" id="applyCostParamsBtn" type="submit">应用参数</button>
+              <button class="small-button" id="savePresetBtn" type="button">保存预设</button>
+              <button class="small-button" id="loadPresetBtn" type="button">加载预设</button>
+              <button class="secondary-button" id="conservativePresetBtn" type="button">保守默认值</button>
+              <button class="secondary-button" id="aggressivePresetBtn" type="button">激进模拟默认值</button>
             </div>
           </form>
         </section>
 
         <section class="panel market-panel" id="liveMarketSection" aria-labelledby="marketTitle">
-          <div class="panel-head compact"><h2 id="marketTitle">Live Market</h2></div>
+          <div class="panel-head compact"><h2 id="marketTitle">实时行情</h2></div>
           <dl class="data-grid">
-            <dt>best bid</dt><dd id="marketBestBid">--</dd>
-            <dt>bid size</dt><dd id="marketBidSize">--</dd>
-            <dt>best ask</dt><dd id="marketBestAsk">--</dd>
-            <dt>ask size</dt><dd id="marketAskSize">--</dd>
-            <dt>spread bps</dt><dd id="marketSpreadBps">--</dd>
-            <dt>last price</dt><dd id="marketLastPrice">--</dd>
-            <dt>opening VWAP</dt><dd id="marketOpeningVwap">--</dd>
-            <dt>rolling VWAP</dt><dd id="marketRollingVwap">--</dd>
-            <dt>realized vol</dt><dd id="marketRealizedVol">--</dd>
-            <dt>rolling high</dt><dd id="marketRollingHigh">--</dd>
-            <dt>rolling low</dt><dd id="marketRollingLow">--</dd>
-            <dt>orderbook imbalance</dt><dd id="marketImbalance">--</dd>
-            <dt>cumulative turnover</dt><dd id="marketCumulativeTurnover">--</dd>
-            <dt>volume delta</dt><dd id="marketVolumeDelta">--</dd>
-            <dt>turnover delta</dt><dd id="marketTurnoverDelta">--</dd>
-            <dt>cumulative_field_reset_detected</dt><dd id="marketResetDetected">--</dd>
-            <dt>tick count</dt><dd id="marketTickCount">--</dd>
+            <dt>最佳买价</dt><dd id="marketBestBid">--</dd>
+            <dt>买盘数量</dt><dd id="marketBidSize">--</dd>
+            <dt>最佳卖价</dt><dd id="marketBestAsk">--</dd>
+            <dt>卖盘数量</dt><dd id="marketAskSize">--</dd>
+            <dt>价差 bps</dt><dd id="marketSpreadBps">--</dd>
+            <dt>最新价</dt><dd id="marketLastPrice">--</dd>
+            <dt>开盘 VWAP</dt><dd id="marketOpeningVwap">--</dd>
+            <dt>滚动 VWAP</dt><dd id="marketRollingVwap">--</dd>
+            <dt>实时波动</dt><dd id="marketRealizedVol">--</dd>
+            <dt>滚动最高</dt><dd id="marketRollingHigh">--</dd>
+            <dt>滚动最低</dt><dd id="marketRollingLow">--</dd>
+            <dt>盘口不平衡</dt><dd id="marketImbalance">--</dd>
+            <dt>累计成交额</dt><dd id="marketCumulativeTurnover">--</dd>
+            <dt>成交量增量</dt><dd id="marketVolumeDelta">--</dd>
+            <dt>成交额增量</dt><dd id="marketTurnoverDelta">--</dd>
+            <dt>累计字段重置</dt><dd id="marketResetDetected">--</dd>
+            <dt>tick 数</dt><dd id="marketTickCount">--</dd>
           </dl>
         </section>
 
         <section class="panel decision-panel" id="costReducerDecisionSection" aria-labelledby="decisionTitle">
-          <div class="panel-head compact"><h2 id="decisionTitle">Cost Reducer Decision</h2></div>
+          <div class="panel-head compact"><h2 id="decisionTitle">成本优化决策</h2></div>
           <dl class="data-grid">
-            <dt>action</dt><dd id="decisionAction">--</dd>
-            <dt>reason</dt><dd id="decisionReason">--</dd>
-            <dt>proposed side</dt><dd id="decisionSide">--</dd>
-            <dt>proposed quantity</dt><dd id="decisionQuantity">--</dd>
-            <dt>proposed limit price</dt><dd id="decisionLimitPrice">--</dd>
-            <dt>expected edge bps</dt><dd id="decisionExpectedEdge">--</dd>
-            <dt>estimated costs</dt><dd id="decisionCosts">--</dd>
-            <dt>inventory constraints</dt><dd id="decisionInventoryConstraints">--</dd>
-            <dt>market constraints</dt><dd id="decisionMarketConstraints">--</dd>
-            <dt>blocked reason</dt><dd id="decisionBlockedReason">--</dd>
-            <dt>timestamp</dt><dd id="decisionTimestamp">--</dd>
+            <dt>动作</dt><dd id="decisionAction">--</dd>
+            <dt>原因</dt><dd id="decisionReason">--</dd>
+            <dt>方向</dt><dd id="decisionSide">--</dd>
+            <dt>数量</dt><dd id="decisionQuantity">--</dd>
+            <dt>限价</dt><dd id="decisionLimitPrice">--</dd>
+            <dt>预期边际 bps</dt><dd id="decisionExpectedEdge">--</dd>
+            <dt>估算成本</dt><dd id="decisionCosts">--</dd>
+            <dt>持仓约束</dt><dd id="decisionInventoryConstraints">--</dd>
+            <dt>市场约束</dt><dd id="decisionMarketConstraints">--</dd>
+            <dt>拦截原因</dt><dd id="decisionBlockedReason">--</dd>
+            <dt>时间</dt><dd id="decisionTimestamp">--</dd>
           </dl>
-          <label class="confirm-field"><span>real confirmation phrase</span><input id="costReducerConfirmText" placeholder="输入：确认实盘"></label>
-          <label class="inline-check"><input id="ackRealCostReducer" type="checkbox"> acknowledge this may submit real orders</label>
+          <label class="confirm-field"><span>实盘确认短语</span><input id="costReducerConfirmText" placeholder="输入：确认实盘"></label>
+          <label class="inline-check"><input id="ackRealCostReducer" type="checkbox"> 我确认这可能提交真实成本优化订单</label>
           <div class="button-pair wrap">
-            <button class="danger-button small" id="approveIntentBtn" type="button">Approve once</button>
-            <button class="small-button" id="rejectIntentBtn" type="button">Reject intent</button>
-            <button class="small-button" id="expireIntentBtn" type="button">Expire intent</button>
+            <button class="danger-button small" id="approveIntentBtn" type="button">仅批准一次</button>
+            <button class="small-button" id="rejectIntentBtn" type="button">拒绝意图</button>
+            <button class="small-button" id="expireIntentBtn" type="button">过期意图</button>
           </div>
         </section>
 
         <section class="panel orders-panel" id="ordersFillsSection" aria-labelledby="ordersTitle">
-          <div class="panel-head compact"><h2 id="ordersTitle">Orders and Fills</h2></div>
+          <div class="panel-head compact"><h2 id="ordersTitle">订单与成交</h2></div>
           <div class="grid-2">
-            <div><h2>Open Orders</h2><ol id="openOrders" class="mini-list"></ol></div>
-            <div><h2>Fill Ledger</h2><ol id="fillLedger" class="mini-list"></ol></div>
+            <div><h2>活动订单</h2><ol id="openOrders" class="mini-list"></ol></div>
+            <div><h2>成交流水</h2><ol id="fillLedger" class="mini-list"></ol></div>
           </div>
           <div class="grid-3">
-            <label><span>order id</span><input id="cancelOrderId"></label>
-            <button class="small-button" id="cancelOrderBtn" type="button">Cancel active order</button>
+            <label><span>订单号</span><input id="cancelOrderId"></label>
+            <button class="small-button" id="cancelOrderBtn" type="button">撤销活动订单</button>
             <span id="orderTimeline">--</span>
           </div>
         </section>
 
         <section class="panel replay-panel" id="replaySection" aria-labelledby="replayTitle">
-          <div class="panel-head compact"><h2 id="replayTitle">Replay</h2></div>
+          <div class="panel-head compact"><h2 id="replayTitle">回放</h2></div>
           <form id="replayForm" class="trade-form">
             <div class="grid-2">
-              <label><span>JSONL path</span><input id="replayInputPath" name="input_path" value="logs/grey_open_01234.jsonl"></label>
-              <label><span>output log path</span><input id="replayOutputPath" name="output_log_path" value="logs/replay_cost_reducer_01234.jsonl"></label>
+              <label><span>输入 JSONL 路径</span><input id="replayInputPath" name="input_path" value="logs/grey_open_01234.jsonl"></label>
+              <label><span>输出日志路径</span><input id="replayOutputPath" name="output_log_path" value="logs/replay_cost_reducer_01234.jsonl"></label>
             </div>
-            <button class="primary-button" id="runReplayBtn" type="submit">Replay with current parameters</button>
+            <button class="primary-button" id="runReplayBtn" type="submit">按当前参数回放</button>
           </form>
           <pre id="replaySummary">{}</pre>
-          <button class="small-button" id="exportReplaySummaryBtn" type="button">Export replay summary JSON</button>
+          <button class="small-button" id="exportReplaySummaryBtn" type="button">导出回放摘要 JSON</button>
         </section>
       </section>
 
@@ -376,10 +391,10 @@
         <div class="panel-head compact">
           <h2 id="eventsTitle">事件日志</h2>
           <div class="button-pair">
-            <input id="logFilterText" placeholder="search text">
+            <input id="logFilterText" placeholder="搜索日志">
             <button class="small-button" id="eventsRefreshBtn" type="button">刷新日志</button>
-            <button class="small-button" id="downloadLogBtn" type="button">Download/export log</button>
-            <button class="small-button" id="copyLatestErrorBtn" type="button">Copy latest error</button>
+            <button class="small-button" id="downloadLogBtn" type="button">导出日志</button>
+            <button class="small-button" id="copyLatestErrorBtn" type="button">复制最新错误</button>
           </div>
         </div>
         <ol id="eventLog" class="event-log" aria-live="polite"></ol>

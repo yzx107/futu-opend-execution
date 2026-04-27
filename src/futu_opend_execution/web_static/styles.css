@@ -262,6 +262,16 @@ label > span,
   height: 18px;
 }
 
+.real-warning {
+  border: 1px solid rgba(245, 165, 36, 0.55);
+  border-radius: 6px;
+  background: rgba(245, 165, 36, 0.12);
+  color: #ffd79a;
+  padding: 9px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
