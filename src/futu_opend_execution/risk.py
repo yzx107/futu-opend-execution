@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from futu_opend_execution.config import RuntimeConfig
+from futu_opend_execution.config import RuntimeConfig, is_local_opend_host
 from futu_opend_execution.models import GreyMarketBuyRequest, OrderBookSnapshot, TradeMode
 
 
@@ -29,6 +29,11 @@ class RealTradeDisabledError(ExecutionValidationError):
 def validate_runtime_config(config: RuntimeConfig) -> None:
     if not config.futu_host.strip():
         raise ExecutionValidationError("FUTU_HOST must not be empty.")
+    if not is_local_opend_host(config.futu_host):
+        raise ExecutionValidationError(
+            "FUTU_HOST must be local loopback (127.0.0.1, localhost, or ::1) "
+            "so OpenD traffic does not leave this machine."
+        )
     if config.futu_port <= 0:
         raise ExecutionValidationError("FUTU_PORT must be a positive integer.")
     if config.order_poll_interval_seconds <= 0:

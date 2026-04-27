@@ -81,6 +81,7 @@
 - 下单前先做输入校验和风控校验
 - 每个触发、下单请求、券商响应、错误都写 JSONL
 - 策略逻辑和执行逻辑分离
+- OpenD 必须连本机 loopback：`FUTU_HOST` 只允许 `127.0.0.1`、`localhost` 或 `::1`，进程启动 Futu SDK 前会清理常见 proxy 环境变量并补 `NO_PROXY`
 - `.env` 被 `.gitignore` 忽略，敏感信息不进入仓库
 
 ### 执行模式层级

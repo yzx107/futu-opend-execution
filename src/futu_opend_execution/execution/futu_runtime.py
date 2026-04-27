@@ -6,12 +6,14 @@ import importlib
 import os
 from pathlib import Path
 
-from futu_opend_execution.config import RuntimeConfig
+from futu_opend_execution.config import RuntimeConfig, harden_local_opend_environment
 from futu_opend_execution.execution.broker import BrokerDependencyError
 
 
 def load_futu_module(config: RuntimeConfig):
     """Load the optional futu SDK after preparing a writable HOME if needed."""
+
+    harden_local_opend_environment()
 
     if config.futu_sdk_home_override:
         home_path = Path(config.futu_sdk_home_override).expanduser()

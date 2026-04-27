@@ -3,8 +3,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from ipaddress import ip_address
 from os import environ
-from typing import Mapping
+from typing import Mapping, MutableMapping
+
+
+LOCAL_OPEND_HOSTS = {"localhost"}
+LOCAL_OPEND_NO_PROXY_HOSTS = ("127.0.0.1", "localhost", "::1")
+PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
@@ -44,6 +57,50 @@ def _parse_csv_tuple(value: str | None, *, default: tuple[str, ...]) -> tuple[st
         return default
     items = tuple(item.strip().upper() for item in value.split(",") if item.strip())
     return items or default
+
+
+def is_local_opend_host(host: str) -> bool:
+    """Return whether an OpenD host is guaranteed to stay on this machine."""
+
+    normalized = host.strip().strip("[]").lower()
+    if normalized in LOCAL_OPEND_HOSTS:
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
+
+
+def harden_local_opend_environment(
+    env: MutableMapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Keep OpenD SDK traffic away from process-level proxy settings.
+
+    Futu OpenD should be reached through loopback TCP. Clearing proxy
+    environment variables does not control system-level TUN routing, but it
+    avoids accidental SDK/helper HTTP proxy usage in this process.
+    """
+
+    target = environ if env is None else env
+    removed: dict[str, str] = {}
+    for key in PROXY_ENV_KEYS:
+        value = target.pop(key, None)
+        if value is not None:
+            removed[key] = value
+
+    for key in ("NO_PROXY", "no_proxy"):
+        existing = [
+            item.strip()
+            for item in str(target.get(key, "")).split(",")
+            if item.strip()
+        ]
+        existing_lower = {item.lower() for item in existing}
+        for host in LOCAL_OPEND_NO_PROXY_HOSTS:
+            if host.lower() not in existing_lower:
+                existing.append(host)
+                existing_lower.add(host.lower())
+        target[key] = ",".join(existing)
+    return removed
 
 
 @dataclass(frozen=True, slots=True)
