@@ -1189,7 +1189,7 @@ def main(argv: list[str] | None = None) -> int:
 
 def _add_common_rule_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("symbol", help="HK symbol, for example HK.09868 or 09868.")
-    parser.add_argument("--quantity", type=int, required=True, help="Target buy size.")
+    parser.add_argument("--quantity", type=int, required=True, help="Target buy shares, not lots.")
     parser.add_argument("--max-price", required=True, help="Limit price cap.")
     parser.add_argument("--max-qty", type=int, required=True, help="Hard quantity cap.")
     parser.add_argument(

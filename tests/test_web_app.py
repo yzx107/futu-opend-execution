@@ -603,6 +603,7 @@ class WebAppTests(unittest.TestCase):
             "maxSpreadBps",
             "replaySection",
             "实盘暗盘抢单",
+            "数量（股，不是手）",
             "50/50 持仓",
         ):
             self.assertIn(token, html)

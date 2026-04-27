@@ -146,14 +146,14 @@
                 <input id="greyMaxPrice" name="max_price" type="number" min="0" step="0.001" required>
               </label>
               <label>
-                <span>数量</span>
+                <span>数量（股，不是手）</span>
                 <input id="greyQuantity" name="quantity" type="number" min="1" step="1" value="1000" required>
               </label>
             </div>
 
             <label>
-              <span>最大金额</span>
-              <input id="greyMaxNotional" name="max_notional" type="number" min="0" step="0.01" placeholder="0.00">
+              <span>最大金额（最高价 × 股数上限）</span>
+              <input id="greyMaxNotional" name="max_notional" type="number" min="0" step="0.01" placeholder="例：12.80 × 1000 = 12800">
             </label>
 
             <div class="grid-2">
@@ -205,7 +205,7 @@
           <div class="trade-form">
             <div class="grid-3">
               <label><span>标的代码</span><input id="setupSymbol" name="symbol" value="HK.01234"></label>
-              <label><span>目标数量</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
+              <label><span>目标数量（股）</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
               <label><span>每手股数</span><input id="setupLotSize" name="lot_size" type="number" value="100"></label>
             </div>
             <div class="grid-3">

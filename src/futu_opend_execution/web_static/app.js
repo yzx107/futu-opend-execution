@@ -208,14 +208,14 @@ function greyPayload() {
 
 function validateGreyPayload(payload) {
   if (!payload.symbol) return "请输入暗盘标的代码。";
-  if (!(payload.quantity > 0)) return "请输入暗盘买入数量。";
+  if (!(payload.quantity > 0)) return "请输入暗盘买入股数，不是手数。";
   if (!(payload.max_price > 0)) return "请输入暗盘最高限价。";
   if (!(payload.max_notional > 0)) return "请输入最大金额。";
   if (payload.max_qty != null && payload.max_qty > 0 && payload.quantity > payload.max_qty) {
     return "买入数量不能超过最大股数。";
   }
   if (payload.max_price * payload.quantity > payload.max_notional) {
-    return "最高限价 x 数量不能超过最大金额。";
+    return "最高限价 x 股数不能超过最大金额。";
   }
   return "";
 }
