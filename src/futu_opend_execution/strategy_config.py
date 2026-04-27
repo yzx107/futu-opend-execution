@@ -21,7 +21,7 @@ class ExecutionMode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class GreyOpenRuntimeParams:
-    symbol: str = "HK.01234"
+    symbol: str = "HK.01879"
     quantity: int = 1000
     lot_size: int = 100
     max_price: Decimal = Decimal("0")

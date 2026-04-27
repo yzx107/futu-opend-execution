@@ -16,7 +16,7 @@ from decimal import Decimal
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock, Thread, current_thread
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -104,6 +104,7 @@ class WebState:
         self.latest_market_state: dict[str, Any] | None = None
         self.latest_decision: dict[str, Any] | None = None
         self.live_thread: Thread | None = None
+        self.live_threads: dict[str, Thread] = {}
 
     def check_duplicate_real_order(self, signature: str) -> None:
         now = time.monotonic()
@@ -439,8 +440,10 @@ def api_subscribe(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
 
 def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
     rules = _rules_from_payload(state, payload)
-    if state.ui_state.live_running and state.live_thread and state.live_thread.is_alive():
-        raise ExecutionValidationError("已有暗盘布防正在运行，请先停止。")
+    if _has_live_threads(state) and state.ui_state.execution_mode is not ExecutionMode.LIVE_DRY_RUN:
+        raise ExecutionValidationError("已有其他实盘/模拟模式在运行，请先停止。")
+    if _live_thread_is_alive(state, rules.symbol):
+        raise ExecutionValidationError(f"{rules.symbol} 已在模拟盯盘，请勿重复启动。")
     if state.kill_switch_file.exists():
         raise ExecutionValidationError("Kill switch 已开启；清除后才能开始模拟布防。")
     timeout_seconds = float(payload.get("timeout_seconds") or 600)
@@ -463,6 +466,7 @@ def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str
         daemon=True,
     )
     state.live_thread = thread
+    state.live_threads[rules.symbol] = thread
     thread.start()
     return {
         "running": True,
@@ -474,7 +478,9 @@ def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str
 
 def api_start_live_real_buy_only(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
     rules = _rules_from_payload(state, payload)
-    if state.ui_state.live_running and state.live_thread and state.live_thread.is_alive():
+    if _has_live_threads(state) and state.ui_state.execution_mode is not ExecutionMode.LIVE_REAL_BUY_ONLY:
+        _raise_blocked_real_order(state, "已有其他实盘/模拟模式在运行，请先停止。", symbol=rules.symbol)
+    if _live_thread_is_alive(state, rules.symbol):
         _raise_blocked_real_order(state, "已有暗盘实盘布防正在运行", symbol=rules.symbol)
     if not state.config.allow_real_trade:
         _raise_blocked_real_order(state, "环境未开启 FUTU_ALLOW_REAL_TRADE=1", symbol=rules.symbol)
@@ -556,6 +562,7 @@ def api_start_live_real_buy_only(state: WebState, payload: dict[str, Any]) -> di
         daemon=True,
     )
     state.live_thread = thread
+    state.live_threads[rules.symbol] = thread
     thread.start()
     return {
         "running": True,
@@ -609,7 +616,7 @@ def _run_live_real_buy_worker(
             message=str(exc),
         )
     finally:
-        state.ui_state.live_running = False
+        _mark_live_thread_finished(state, rules.symbol)
 
 
 def _run_live_dry_run_worker(
@@ -644,7 +651,7 @@ def _run_live_dry_run_worker(
             message=str(exc),
         )
     finally:
-        state.ui_state.live_running = False
+        _mark_live_thread_finished(state, rules.symbol)
 
 
 def api_cost_reducer_config(state: WebState) -> dict[str, Any]:
@@ -1072,6 +1079,40 @@ def api_kill_switch(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
         "kill_switch": state.kill_switch_file.exists(),
         "kill_switch_file": str(state.kill_switch_file),
     }
+
+
+def _live_thread_is_alive(state: WebState, symbol: str) -> bool:
+    normalized = _normalize_symbol(symbol)
+    with state._lock:
+        thread = state.live_threads.get(normalized)
+        if thread is None:
+            return False
+        if thread.is_alive():
+            return True
+        state.live_threads.pop(normalized, None)
+        state.ui_state.live_running = bool(state.live_threads)
+        return False
+
+
+def _has_live_threads(state: WebState) -> bool:
+    with state._lock:
+        for symbol, thread in list(state.live_threads.items()):
+            if thread.is_alive():
+                return True
+            state.live_threads.pop(symbol, None)
+        state.ui_state.live_running = False
+        return False
+
+
+def _mark_live_thread_finished(state: WebState, symbol: str) -> None:
+    normalized = _normalize_symbol(symbol)
+    with state._lock:
+        thread = state.live_threads.get(normalized)
+        if thread is current_thread():
+            state.live_threads.pop(normalized, None)
+        state.ui_state.live_running = any(
+            thread.is_alive() for thread in state.live_threads.values()
+        )
 
 
 def api_events(state: WebState, *, limit: int = 80) -> dict[str, Any]:

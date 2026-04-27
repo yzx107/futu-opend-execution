@@ -3,6 +3,8 @@ const state = {
   events: [],
 };
 
+const MAX_GREY_SYMBOLS = 5;
+
 const $ = (selector) => document.querySelector(selector);
 
 const els = {
@@ -177,16 +179,36 @@ function normalPayload() {
   };
 }
 
-function greyPayload() {
+function parseGreySymbols(raw) {
+  const seen = new Set();
+  return String(raw || "")
+    .split(/[\s,，;；]+/)
+    .map((symbol) => symbol.trim().toUpperCase())
+    .filter(Boolean)
+    .map((symbol) => (symbol.includes(".") ? symbol : `HK.${symbol}`))
+    .filter((symbol) => {
+      if (seen.has(symbol)) return false;
+      seen.add(symbol);
+      return true;
+    });
+}
+
+function greySymbols() {
   const primarySymbol = $("#greySymbol")?.value || "";
   const setupSymbol = $("#setupSymbol")?.value || "";
+  return parseGreySymbols(primarySymbol || setupSymbol);
+}
+
+function greyPayload(symbolOverride = "") {
+  const symbols = greySymbols();
   const quantity = numberOrNull($("#greyQuantity")?.value) ?? numberOrNull($("#setupQuantity")?.value);
   const maxPrice = numberOrNull($("#greyMaxPrice")?.value) ?? numberOrNull($("#setupMaxPrice")?.value);
   const maxNotional = numberOrNull($("#greyMaxNotional")?.value) ?? numberOrNull($("#setupMaxNotional")?.value);
   const maxAttempts = numberOrNull($("#greyMaxAttempts")?.value) ?? numberOrNull($("#setupMaxOrderAttempts")?.value);
   const coolDownMs = numberOrNull($("#greyCoolDown")?.value) ?? numberOrNull($("#setupCoolDownMs")?.value);
   return {
-    symbol: (primarySymbol || setupSymbol).trim(),
+    symbol: symbolOverride || symbols[0] || "",
+    symbols,
     max_price: maxPrice,
     quantity,
     max_qty: numberOrNull($("#setupMaxQty")?.value),
@@ -207,7 +229,8 @@ function greyPayload() {
 }
 
 function validateGreyPayload(payload) {
-  if (!payload.symbol) return "请输入暗盘标的代码。";
+  if (!payload.symbols?.length) return "请输入暗盘标的代码。";
+  if (payload.symbols.length > MAX_GREY_SYMBOLS) return `一次最多同时盯 ${MAX_GREY_SYMBOLS} 个暗盘代码。`;
   if (!(payload.quantity > 0)) return "请输入暗盘买入股数，不是手数。";
   if (!(payload.max_price > 0)) return "请输入暗盘最高限价。";
   if (!(payload.max_notional > 0)) return "请输入最大金额。";
@@ -334,14 +357,26 @@ async function startLiveDryRun() {
     addLocalEvent("grey", validation, "error");
     return;
   }
-  setGreyStatus("正在启动实时模拟布防，会读取 OpenD 行情但不会真实下单...", "warn");
-  const data = await requestJson("/api/grey-open/start-live-dry-run", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-  state.armed = Boolean(data.running);
+  setGreyStatus(`正在启动 ${payload.symbols.length} 个代码的实时模拟盯盘，不会真实下单...`, "warn");
+  const results = await Promise.allSettled(
+    payload.symbols.map((symbol) => requestJson("/api/grey-open/start-live-dry-run", {
+      method: "POST",
+      body: JSON.stringify({ ...payload, symbol }),
+    })),
+  );
+  const ok = results.filter((result) => result.status === "fulfilled");
+  const failed = results.filter((result) => result.status === "rejected");
+  state.armed = ok.length > 0;
   syncArmed();
-  addLocalEvent("live", `实时模拟布防已启动 ${data.symbol || ""}，超时 ${data.timeout_seconds || "--"} 秒`, "warn");
+  if (failed.length) {
+    const message = `${ok.length} 个已启动，${failed.length} 个失败：${failed.map((result) => result.reason.message).join("；")}`;
+    setGreyStatus(message, ok.length ? "warn" : "error");
+    addLocalEvent("live", message, ok.length ? "warn" : "error");
+    return;
+  }
+  const symbols = ok.map((result) => result.value.symbol).join(", ");
+  setGreyStatus(`模拟盯盘已启动：${symbols}`, "warn");
+  addLocalEvent("live", `实时模拟盯盘已启动：${symbols}`, "warn");
 }
 
 async function stopLiveRun() {
@@ -453,25 +488,42 @@ async function evaluateGrey(event) {
     const url = payload.real ? "/api/grey-open/start-live-real-buy-only" : "/api/grey/evaluate";
     setGreyStatus(
       payload.real
-        ? "正在做实盘暗盘买入预检并启动布防..."
-        : "正在读取 OpenD 暗盘报价和盘口，做一次试跑评估...",
+        ? `正在做 ${payload.symbols.length} 个代码的实盘暗盘买入预检并启动布防...`
+        : `正在读取 ${payload.symbols.length} 个代码的 OpenD 暗盘报价和盘口，做一次试跑评估...`,
       "warn",
     );
-    const data = await requestJson(url, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    const message = payload.real
-      ? `实盘暗盘买入已布防 ${data.symbol || ""}，最大尝试 ${data.max_order_attempts || "--"}，超时 ${data.timeout_seconds || "--"} 秒`
-      : `评估完成 ${compactJson(data)}`;
-    state.armed = Boolean(payload.real);
+    const results = await Promise.allSettled(
+      payload.symbols.map((symbol) => requestJson(url, {
+        method: "POST",
+        body: JSON.stringify({ ...payload, symbol }),
+      })),
+    );
+    const ok = results.filter((result) => result.status === "fulfilled");
+    const failed = results.filter((result) => result.status === "rejected");
+    state.armed = Boolean(payload.real && ok.length);
     syncArmed();
-    if (!payload.real) {
+    if (failed.length) {
+      const message = `${ok.length} 个成功，${failed.length} 个失败：${failed.map((result) => result.reason.message).join("；")}`;
+      setGreyStatus(message, ok.length ? "warn" : "error");
+      addLocalEvent("grey", message, ok.length ? "warn" : "error");
+      return;
+    }
+    if (payload.real) {
+      const symbols = ok.map((result) => result.value.symbol).join(", ");
+      setGreyStatus(`实盘暗盘买入已布防：${symbols}`, "warn");
+      addLocalEvent("grey", `实盘暗盘买入已布防：${symbols}`, "warn");
+      refreshEvents();
+      return;
+    }
+    const messages = ok.map((result) => {
+      const data = result.value;
       const action = data?.decision?.action || "--";
       const reason = data?.decision?.reason || "--";
-      setGreyStatus(`试跑完成：${action}，${reason}`, action === "ORDER" ? "warn" : "");
-    }
-    addLocalEvent("grey", data?.message || message, payload.real ? "warn" : "ok");
+      const symbol = data?.signal?.symbol || data?.decision?.intent?.symbol || "--";
+      return `${symbol}: ${action} / ${reason}`;
+    });
+    setGreyStatus(`试跑完成：${messages.join("；")}`, messages.some((message) => message.includes("ORDER")) ? "warn" : "");
+    addLocalEvent("grey", `试跑完成：${messages.join("；")}`, "ok");
     refreshEvents();
   } catch (error) {
     setGreyStatus(error.message, "error");

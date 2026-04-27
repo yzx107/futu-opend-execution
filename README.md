@@ -495,6 +495,7 @@ Web UI 当前支持：
 - 暗盘抢单 dry-run 评估
 - 暗盘抢单 `LIVE_REAL_BUY_ONLY` 布防：只提交开盘买入限价单，不触发成本优化器真实卖出/买回
 - 暗盘抢单数量口径是“股数”，不是“手数”；金额硬风控按 `最高限价 × 股数 <= 最大金额` 计算
+- Web UI 暗盘默认代码是 `HK.01879`；可在代码框输入多个代码，使用逗号、空格或换行分隔，多个代码会并行盯盘并各自走同一套风控
 - 暗盘 session 参数校验和 live dry-run 状态控制
 - 50/50 inventory seed/reset/reconcile
 - 成本优化器参数面板、preset 入口和 manual approval 控件

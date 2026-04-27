@@ -283,6 +283,25 @@ class WebAppTests(unittest.TestCase):
             ]
             self.assertTrue(any(event["event"] == "web_live_dry_run_started" for event in events))
 
+    def test_live_dry_run_allows_multiple_symbols_but_blocks_duplicate_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            FakeThread.instances = []
+            payload = {**self._grey_real_payload(), "real": False, "real_mode": False}
+
+            with patch("futu_opend_execution.web_app.Thread", FakeThread):
+                first = api_start_live_dry_run(state, payload)
+                second = api_start_live_dry_run(
+                    state,
+                    {**payload, "symbol": "HK.01879"},
+                )
+                with self.assertRaises(ExecutionValidationError):
+                    api_start_live_dry_run(state, payload)
+
+            self.assertEqual(first["symbol"], "HK.01234")
+            self.assertEqual(second["symbol"], "HK.01879")
+            self.assertEqual(len(FakeThread.instances), 2)
+
     def test_live_dry_run_rejects_active_kill_switch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = make_state(temp_dir)
@@ -370,6 +389,22 @@ class WebAppTests(unittest.TestCase):
                 for line in state.log_file.read_text(encoding="utf-8").splitlines()
             ]
             self.assertTrue(any(event["event"] == "web_grey_real_buy_armed" for event in events))
+
+    def test_live_real_grey_buy_only_allows_multiple_symbols(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir, allow_real_trade=True)
+            FakeThread.instances = []
+
+            with patch("futu_opend_execution.web_app.Thread", FakeThread):
+                first = api_start_live_real_buy_only(state, self._grey_real_payload())
+                second = api_start_live_real_buy_only(
+                    state,
+                    {**self._grey_real_payload(), "symbol": "HK.01879"},
+                )
+
+            self.assertEqual(first["symbol"], "HK.01234")
+            self.assertEqual(second["symbol"], "HK.01879")
+            self.assertEqual(len(FakeThread.instances), 2)
 
     def test_cost_reducer_config_endpoint_accepts_spread_and_vol_params(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -604,6 +639,8 @@ class WebAppTests(unittest.TestCase):
             "replaySection",
             "实盘暗盘抢单",
             "数量（股，不是手）",
+            "HK.01879",
+            "多个代码",
             "50/50 持仓",
         ):
             self.assertIn(token, html)

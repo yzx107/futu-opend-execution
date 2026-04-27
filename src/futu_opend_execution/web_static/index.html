@@ -136,8 +136,8 @@
 
           <form id="greyForm" class="trade-form">
             <label>
-              <span>代码</span>
-              <input id="greySymbol" name="symbol" autocomplete="off" value="HK.02460" required>
+              <span>暗盘代码（可多个，逗号/空格/换行分隔）</span>
+              <textarea id="greySymbol" name="symbol" autocomplete="off" required>HK.01879</textarea>
             </label>
 
             <div class="grid-2">
@@ -168,7 +168,7 @@
             </div>
 
             <div class="real-warning">
-              实盘暗盘抢单会在 OpenD 暗盘状态变为 TRADING 且价格/金额/次数风控通过时提交真实限价买单。请确认标的、数量、最高价和最大金额。
+              实盘暗盘抢单会在 OpenD 暗盘状态变为 TRADING 且价格/金额/次数风控通过时提交真实限价买单。多个代码会并行盯盘，每个代码独立使用同一套数量、最高价和最大金额上限。
             </div>
 
             <div class="grid-2">
@@ -204,7 +204,7 @@
           </div>
           <div class="trade-form">
             <div class="grid-3">
-              <label><span>标的代码</span><input id="setupSymbol" name="symbol" value="HK.01234"></label>
+              <label><span>标的代码</span><input id="setupSymbol" name="symbol" value="HK.01879"></label>
               <label><span>目标数量（股）</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
               <label><span>每手股数</span><input id="setupLotSize" name="lot_size" type="number" value="100"></label>
             </div>
