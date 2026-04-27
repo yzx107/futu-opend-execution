@@ -10,10 +10,6 @@ from futu_opend_execution.inventory import InventoryState
 from futu_opend_execution.services.real_order import GreyOrderRole, GreyOrderSide
 from futu_opend_execution.signals.intraday_adaptive import AdaptiveMarketState
 
-from futu_opend_execution.signals.market_pressure import MarketPressureCalculator
-from futu_opend_execution.services.trading_position import TradingPositionEngine, TradingPositionRules, TradingAction
-import time
-
 class CostReducerAction(str, Enum):
     WAIT = "WAIT"
     SELL_TRADING = "SELL_TRADING"
@@ -103,9 +99,6 @@ class CostReducerExecutableIntent:
 class CostReducerEngine:
     def __init__(self, rules: CostReducerRules) -> None:
         self._rules = rules
-        self._tp_engine = None
-        self._pressure_calc = MarketPressureCalculator()
-        self._start_time = None
 
     def evaluate(
         self,
@@ -114,29 +107,109 @@ class CostReducerEngine:
         market: AdaptiveMarketState,
         state: CostReducerState,
     ) -> CostReducerDecision:
-        now = time.monotonic()
-        if self._start_time is None:
-            self._start_time = now
-            
-        if self._tp_engine is None:
-            tp_rules = TradingPositionRules()
-            self._tp_engine = TradingPositionEngine(rules=tp_rules, total_trading_qty=inventory.trading_qty_target, lot_size=1)
-            
-        elapsed = now - self._start_time
-        pressure = self._pressure_calc.compute(market, elapsed_seconds=elapsed)
-        decision = self._tp_engine.evaluate(market, pressure)
-        
-        if decision.action == TradingAction.BUY_TRADING:
-            return CostReducerDecision(CostReducerAction.REBUY_TRADING, quantity=decision.quantity, reason=decision.reason)
-        elif decision.action == TradingAction.SELL_TRADING:
-            return CostReducerDecision(CostReducerAction.SELL_TRADING, quantity=decision.quantity, reason=decision.reason)
-        elif decision.action == TradingAction.SELL_ALL:
-            return CostReducerDecision(CostReducerAction.SELL_TRADING, quantity=decision.quantity, reason=decision.reason)
-            
-        return CostReducerDecision(CostReducerAction.WAIT, reason=decision.reason)
+        if state.round_trips_completed >= self._rules.max_round_trips:
+            return CostReducerDecision(CostReducerAction.BLOCK, reason="max_round_trips reached")
+        if market.last_price is None or market.last_price <= 0:
+            return CostReducerDecision(CostReducerAction.WAIT, reason="last_price unavailable")
 
-    def _evaluate_sell(self, *args, **kwargs): pass
-    def _evaluate_rebuy(self, *args, **kwargs): pass
+        activation_ok = (
+            market.cumulative_turnover >= self._rules.min_turnover_to_activate
+            or market.tick_count >= self._rules.min_ticks_to_activate
+        )
+        if not activation_ok:
+            return CostReducerDecision(CostReducerAction.WAIT, reason="activation threshold not met")
+
+        anchor = market.opening_vwap or market.rolling_vwap
+        if anchor is None or market.realized_vol <= 0:
+            return CostReducerDecision(CostReducerAction.WAIT, reason="anchor/vol unavailable")
+
+        if market.spread_bps > self._rules.max_spread_bps:
+            return CostReducerDecision(CostReducerAction.WAIT, reason="spread too wide")
+
+        sell_decision = self._evaluate_sell(inventory=inventory, market=market, anchor=anchor)
+        if sell_decision is not None:
+            return sell_decision
+
+        rebuy_decision = self._evaluate_rebuy(
+            inventory=inventory,
+            market=market,
+            anchor=anchor,
+            state=state,
+        )
+        if rebuy_decision is not None:
+            return rebuy_decision
+
+        return CostReducerDecision(CostReducerAction.WAIT, reason="conditions not met")
+
+    def _evaluate_sell(
+        self,
+        *,
+        inventory: InventoryState,
+        market: AdaptiveMarketState,
+        anchor: Decimal,
+    ) -> CostReducerDecision | None:
+        if inventory.trading_available_to_sell <= 0:
+            return None
+        if market.orderbook_imbalance > 0:
+            return None
+        overextended = market.last_price > (anchor + self._rules.overextension_vol_multiple * market.realized_vol)
+        if not overextended:
+            return None
+        if market.rolling_high is None:
+            return None
+        pulled_back = (market.rolling_high - market.last_price) >= (
+            self._rules.high_pullback_vol_multiple * market.realized_vol
+        )
+        if not pulled_back:
+            return None
+
+        net_trading_sold = inventory.trading_qty_sold - inventory.trading_qty_rebought
+        max_sell_by_ratio = int(
+            Decimal(inventory.total_target_qty) * self._rules.max_sell_total_position_ratio
+        )
+        remaining_sell_capacity = max_sell_by_ratio - net_trading_sold
+        if remaining_sell_capacity <= 0:
+            return CostReducerDecision(CostReducerAction.BLOCK, reason="max cumulative sell ratio reached")
+
+        quantity = min(inventory.trading_available_to_sell, remaining_sell_capacity)
+        if quantity <= 0:
+            return CostReducerDecision(CostReducerAction.BLOCK, reason="sell quantity blocked by ratio")
+
+        return CostReducerDecision(CostReducerAction.SELL_TRADING, quantity=quantity, reason="sell conditions met")
+
+    def _evaluate_rebuy(
+        self,
+        *,
+        inventory: InventoryState,
+        market: AdaptiveMarketState,
+        anchor: Decimal,
+        state: CostReducerState,
+    ) -> CostReducerDecision | None:
+        if inventory.trading_available_to_rebuy <= 0:
+            return None
+        if state.last_sell_price is None or state.last_sell_price <= 0:
+            return None
+        if market.orderbook_imbalance <= 0:
+            return None
+
+        threshold = state.last_sell_price * (
+            Decimal("1")
+            - (self._rules.estimated_roundtrip_cost_bps + self._rules.safety_buffer_bps) / Decimal("10000")
+        )
+        if market.last_price >= threshold:
+            return None
+
+        near_anchor = abs(market.last_price - anchor) <= (
+            self._rules.rebuy_anchor_vol_band * market.realized_vol
+        )
+        if not near_anchor:
+            return None
+
+        return CostReducerDecision(
+            CostReducerAction.REBUY_TRADING,
+            quantity=inventory.trading_available_to_rebuy,
+            reason="rebuy conditions met",
+        )
 
 
 def apply_dry_run_fill(
@@ -176,6 +249,7 @@ def build_executable_intent(
     policy: CostReducerExecutionPolicy,
     best_bid: Decimal | str | int | float | None,
     best_ask: Decimal | str | int | float | None,
+    last_sell_price: Decimal | str | int | float | None = None,
 ) -> CostReducerExecutableIntent:
     if decision.action not in {
         CostReducerAction.SELL_TRADING,
@@ -238,22 +312,25 @@ def build_executable_intent(
             rules=rules,
             reason="best_ask unavailable",
         )
+    sell_anchor = _to_decimal_optional(last_sell_price)
+    if sell_anchor is None or sell_anchor <= 0:
+        return _blocked_intent(
+            decision=decision,
+            market=market,
+            inventory=inventory,
+            rules=rules,
+            reason="last_sell_price unavailable",
+        )
     limit_price = ask + Decimal(policy.rebuy_limit_offset_ticks) * policy.tick_size
     caps = [cap for cap in (policy.max_rebuy_price, policy.original_max_price) if cap is not None and cap > 0]
     total_cost_bps = rules.estimated_roundtrip_cost_bps + rules.safety_buffer_bps
     if caps:
         limit_price = min(limit_price, *caps)
-    expected_edge = Decimal("0")
-    if rules.estimated_roundtrip_cost_bps >= 0 and rules.safety_buffer_bps >= 0:
-        # Rebuy edge is measured against the last real/dry-run trading sell price.
-        # If that anchor is not available, the caller should keep the intent blocked upstream.
-        expected_edge = Decimal("0")
-    max_profitable_price = None
-    if market.last_price is not None and market.last_price > 0:
-        max_profitable_price = market.last_price * (
-            Decimal("1") - total_cost_bps / Decimal("10000")
-        )
-        limit_price = min(limit_price, max_profitable_price)
+    max_profitable_price = sell_anchor * (
+        Decimal("1") - total_cost_bps / Decimal("10000")
+    )
+    limit_price = min(limit_price, max_profitable_price)
+    expected_edge = _bps(sell_anchor - limit_price, sell_anchor) - total_cost_bps
     return _executable_intent(
         decision=decision,
         market=market,

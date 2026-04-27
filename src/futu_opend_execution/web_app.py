@@ -530,6 +530,7 @@ def api_cost_reducer_evaluate(state: WebState, payload: dict[str, Any]) -> dict[
         policy=_execution_policy_from_params(params),
         best_bid=payload.get("best_bid"),
         best_ask=payload.get("best_ask"),
+        last_sell_price=reducer_state.last_sell_price,
     )
     intent_payload = _dataclass_to_payload(executable)
     if decision.action in {CostReducerAction.SELL_TRADING, CostReducerAction.REBUY_TRADING}:
@@ -547,21 +548,37 @@ def api_cost_reducer_evaluate(state: WebState, payload: dict[str, Any]) -> dict[
 
 
 def api_approve_cost_reducer_intent(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:
-    intent_id = _required_str(payload, "intent_id")
+    intent_id = str(payload.get("intent_id") or "").strip()
+    if not intent_id:
+        _raise_blocked_real_order(state, "intent_id is required", payload=payload)
     pending = state.pending_cost_reducer_intents.get(intent_id)
     if pending is None:
-        raise ExecutionValidationError("pending intent not found.")
+        _raise_blocked_real_order(state, "pending intent not found", intent_id=intent_id)
     if not _truthy(payload.get("acknowledge_real_order", False)):
-        raise ExecutionValidationError("real order acknowledgement checkbox is required.")
+        _raise_blocked_real_order(
+            state,
+            "real order acknowledgement checkbox is required",
+            intent_id=intent_id,
+        )
     if not _truthy(payload.get("real_mode", False)):
-        raise ExecutionValidationError("real mode must be toggled before approval.")
+        _raise_blocked_real_order(
+            state,
+            "real mode must be toggled before approval",
+            intent_id=intent_id,
+        )
+    if str(payload.get("confirm_text") or "") != REAL_CONFIRM_TEXT:
+        _raise_blocked_real_order(
+            state,
+            f"real orders require confirmation phrase: {REAL_CONFIRM_TEXT}",
+            intent_id=intent_id,
+        )
     if state.inventory_manager is None:
-        raise ExecutionValidationError("inventory is required before approval.")
+        _raise_blocked_real_order(state, "inventory is required before approval", intent_id=intent_id)
 
     side = pending.get("side")
     role = pending.get("role")
     if not side or not role or not pending.get("limit_price"):
-        raise ExecutionValidationError("intent is not executable.")
+        _raise_blocked_real_order(state, "intent is not executable", intent_id=intent_id, pending=pending)
     real_intent = GreyMarketRealOrderIntent(
         symbol=str(payload.get("symbol") or state.ui_state.active_symbol),
         side=side,
@@ -589,19 +606,32 @@ def api_approve_cost_reducer_intent(state: WebState, payload: dict[str, Any]) ->
     )
     market_snapshot.setdefault("best_bid", payload.get("best_bid"))
     market_snapshot.setdefault("best_ask", payload.get("best_ask"))
-    guard.validate(
-        real_intent,
-        execution_mode=ExecutionMode.LIVE_REAL_COST_REDUCER_MANUAL_APPROVAL,
-        inventory=state.inventory_manager.inventory,
-        market_snapshot=market_snapshot,
-        confirm_text=str(payload.get("confirm_text") or ""),
-        approved=True,
-        now_monotonic=time.monotonic(),
-    )
+    try:
+        guard.validate(
+            real_intent,
+            execution_mode=ExecutionMode.LIVE_REAL_COST_REDUCER_MANUAL_APPROVAL,
+            inventory=state.inventory_manager.inventory,
+            market_snapshot=market_snapshot,
+            confirm_text=str(payload.get("confirm_text") or ""),
+            approved=True,
+            now_monotonic=time.monotonic(),
+        )
+    except ExecutionValidationError as exc:
+        _raise_blocked_real_order(
+            state,
+            str(exc),
+            intent_id=intent_id,
+            intent=real_intent,
+            market_snapshot=market_snapshot,
+        )
     if not _truthy(payload.get("submit_real", False)):
         pending["status"] = "PENDING_APPROVAL"
-        _log_event(state, "blocked_real_order", reason="submit_real flag not set", intent=real_intent)
-        raise ExecutionValidationError("submit_real flag must be true to place a real order.")
+        _raise_blocked_real_order(
+            state,
+            "submit_real flag must be true to place a real order",
+            intent_id=intent_id,
+            intent=real_intent,
+        )
 
     with FutuGreyMarketOpenDClient(state.config) as client:
         response = client.place_real_limit_order(real_intent)
@@ -691,6 +721,15 @@ def api_logs_filter(
         needle = text.lower()
         events = [event for event in events if needle in json.dumps(event, ensure_ascii=False).lower()]
     return {"events": events}
+
+
+def _raise_blocked_real_order(
+    state: WebState,
+    reason: str,
+    **payload: Any,
+) -> None:
+    _log_event(state, "blocked_real_order", reason=reason, **payload)
+    raise ExecutionValidationError(reason)
 
 
 def api_normal_order(state: WebState, payload: dict[str, Any]) -> dict[str, Any]:

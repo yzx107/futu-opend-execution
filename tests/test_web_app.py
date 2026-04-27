@@ -309,6 +309,60 @@ class WebAppTests(unittest.TestCase):
                     },
                 )
 
+    def test_approve_endpoint_logs_blocked_real_order_for_fail_closed_paths(self) -> None:
+        cases = [
+            ("missing real mode", {"real_mode": False, "acknowledge_real_order": True, "confirm_text": REAL_CONFIRM_TEXT}),
+            ("missing acknowledgement", {"real_mode": True, "acknowledge_real_order": False, "confirm_text": REAL_CONFIRM_TEXT}),
+            ("missing confirmation phrase", {"real_mode": True, "acknowledge_real_order": True, "confirm_text": ""}),
+            ("submit_real flag not set", {"real_mode": True, "acknowledge_real_order": True, "confirm_text": REAL_CONFIRM_TEXT}),
+            ("kill switch", {"real_mode": True, "acknowledge_real_order": True, "confirm_text": REAL_CONFIRM_TEXT, "kill": True}),
+            ("stale market", {"real_mode": True, "acknowledge_real_order": True, "confirm_text": REAL_CONFIRM_TEXT, "stale": True}),
+            ("spread too wide", {"real_mode": True, "acknowledge_real_order": True, "confirm_text": REAL_CONFIRM_TEXT, "spread": "30"}),
+        ]
+        for _, case in cases:
+            with self.subTest(case=case):
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    state = make_state(temp_dir, allow_real_trade=True)
+                    api_inventory_seed_dry_run(
+                        state,
+                        {
+                            "target_quantity": 1000,
+                            "lot_size": 100,
+                            "anchor_price": "10",
+                        },
+                    )
+                    if case.get("kill"):
+                        state.kill_switch_file.write_text("stop", encoding="utf-8")
+                    state.pending_cost_reducer_intents["i1"] = {
+                        "side": "SELL",
+                        "role": "TRADING_SELL",
+                        "quantity": 100,
+                        "limit_price": "10",
+                        "market_snapshot": {
+                            "spread_bps": case.get("spread", "1"),
+                            "max_spread_bps": "20",
+                            "best_bid": "10",
+                            "stale": bool(case.get("stale", False)),
+                        },
+                    }
+                    payload = {
+                        "intent_id": "i1",
+                        "max_notional": "20000",
+                        "lot_size": 100,
+                        "best_bid": "10",
+                        **case,
+                    }
+                    payload.pop("kill", None)
+                    payload.pop("stale", None)
+                    payload.pop("spread", None)
+                    with self.assertRaises(ExecutionValidationError):
+                        api_approve_cost_reducer_intent(state, payload)
+                    events = [
+                        json.loads(line)
+                        for line in state.log_file.read_text(encoding="utf-8").splitlines()
+                    ]
+                    self.assertTrue(any(event["event"] == "blocked_real_order" for event in events))
+
     def test_replay_endpoint_emits_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
