@@ -75,7 +75,7 @@ class CostReducerRuntimeParams:
 class WebUiRuntimeState:
     execution_mode: ExecutionMode = ExecutionMode.LIVE_DRY_RUN
     real_mode_confirmed: bool = False
-    active_symbol: str = "HK.01234"
+    active_symbol: str = "HK.01879"
     live_running: bool = False
     event_count: int = 0
     last_error: str | None = None

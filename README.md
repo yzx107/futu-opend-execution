@@ -462,11 +462,12 @@ PYTHONPATH=src python -m futu_opend_execution.grey_open replay logs/grey_open_01
 
 ## Web UI 控制台
 
-CLI 对非工程师不够友好，所以仓库提供了本地 Web UI。它默认只监听 `127.0.0.1`，第一屏就是交易控制台：
+CLI 对非工程师不够友好，所以仓库提供了本地 Web UI。它默认只监听 `127.0.0.1`，第一屏现在聚焦一个目标：暗盘第一时间按既定规则限价买入。
 
 - 顶部：OpenD 状态、最近报价、事件数量
-- 左侧：正常交易
-- 右侧：暗盘抢单评估、live dry-run 和受保护的实盘 buy-only 布防
+- 主面板：暗盘代码、买入股数、最高价、最大金额、试跑行情、模拟布防、实盘 buy-only 布防
+- 结果区：直接显示每个代码的 `dark_status`、买一/卖一、触发动作和等待/拦截原因
+- 高级折叠区：正常交易、50/50 持仓、成本优化、回放、订单和成交辅助面板
 - 底部：JSONL 事件日志
 
 启动：
@@ -483,6 +484,9 @@ http://127.0.0.1:8765
 
 Web UI 当前支持：
 
+- 暗盘买入主流程三步：`试跑行情` -> `模拟布防` -> `确认实盘抢单`
+- 暗盘触发规则固定为：`dark_status == TRADING` 且 `best_ask <= 最高价`
+- 暗盘真实订单固定为限价买入，不使用市价单
 - 正常交易报价刷新
 - 自动读取 `lot_size`
 - 正常交易 `BUY` / `SELL`
@@ -521,16 +525,18 @@ Web UI 的安全边界：
 - 实盘提交前必须输入 `确认实盘`
 - 暗盘实盘 buy-only 后端会重新校验 lot alignment、`max_qty`、`max_notional`、`max_order_attempts`、订单限频、重复点击和 kill switch
 - 同一真实订单摘要 3 秒内重复点击会被后端拦截
+- 重新启动会先确认没有活动布防线程；如果旧线程还没退出，会保持/创建 kill switch 并拒绝清除，避免旧布防恢复运行
 - 成本优化器真实 sell/rebuy 必须走 `/api/cost-reducer/approve-intent`，后端会再次校验确认短语、ack checkbox、real mode、库存、盘口、spread、stale quote、重复 intent 和限频
 - 自动成本优化器真实执行默认关闭；缺少任一状态时后端记录 blocked event 并拒绝
 
 建议 Web UI 流程：
 
-1. 先用 replay 面板跑历史 JSONL，检查 `cost_reducer_replay_summary`。
-2. 再运行 live dry-run，确认 push/poll 行情、adaptive state、inventory state 和日志正常。
-3. 做 buy-only real probe，小数量、低 `max_notional`、低 `max_order_attempts`。
-4. 开启 manual cost reducer dry-run，只观察 SELL/REBUY intent。
-5. 逐笔核对日志、盘口、账户后，再手动 approve 一笔 sell/rebuy。
+1. 打开 Web UI，确认 OpenD 为 `READY`，Kill switch 为未触发。
+2. 输入暗盘代码、买入股数、最高价、最大金额，点击 `试跑行情`，确认返回原因能看懂。
+3. 点击 `模拟布防`，观察事件日志中 `trigger_event` 是否按预期等待 `dark_status == TRADING`。
+4. 实盘窗口前，只用小股数、低 `max_notional`、低 `max_order_attempts`。
+5. 实盘只点击红色 `确认实盘抢单`，必须输入 `确认实盘` 并勾选确认框。
+6. 成本优化和普通交易都放在高级折叠区；暗盘开盘前不要启用 auto cost reducer。
 
 安全 checklist：
 

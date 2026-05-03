@@ -21,6 +21,7 @@ from futu_opend_execution.web_app import (
     api_normal_order,
     api_quote,
     api_replay_run,
+    api_restart,
     api_start_live_dry_run,
     api_start_live_real_buy_only,
     api_update_cost_reducer_config,
@@ -310,6 +311,36 @@ class WebAppTests(unittest.TestCase):
 
             with self.assertRaises(ExecutionValidationError):
                 api_start_live_dry_run(state, payload)
+
+    def test_restart_blocks_until_live_threads_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            FakeThread.instances = []
+            payload = {**self._grey_real_payload(), "real": False, "real_mode": False}
+
+            with patch("futu_opend_execution.web_app.Thread", FakeThread):
+                api_start_live_dry_run(state, payload)
+                with self.assertRaises(ExecutionValidationError):
+                    api_restart(state)
+
+            self.assertTrue(state.kill_switch_file.exists())
+            events = [
+                json.loads(line)
+                for line in state.log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertTrue(
+                any(event["event"] == "web_restart_blocked_active_threads" for event in events)
+            )
+
+    def test_restart_clears_kill_switch_when_no_live_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+            state.kill_switch_file.write_text("stop", encoding="utf-8")
+
+            payload = api_restart(state)
+
+            self.assertFalse(payload["kill_switch"])
+            self.assertFalse(state.kill_switch_file.exists())
 
     def test_live_real_grey_buy_only_requires_environment(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -638,6 +669,12 @@ class WebAppTests(unittest.TestCase):
             "maxSpreadBps",
             "replaySection",
             "实盘暗盘抢单",
+            "暗盘第一时间买入",
+            "greyRealArmBtn",
+            "greyResult",
+            "高级功能",
+            "试跑行情",
+            "模拟布防",
             "数量（股，不是手）",
             "HK.01879",
             "多个代码",

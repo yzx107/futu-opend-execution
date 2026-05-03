@@ -42,6 +42,8 @@
       </header>
 
       <main class="workspace">
+        <details class="advanced-shell normal-advanced">
+          <summary>普通交易（高级，不用于暗盘第一时间抢单）</summary>
         <section class="panel normal-panel" aria-labelledby="normalTitle">
           <div class="panel-head">
             <div>
@@ -124,17 +126,25 @@
             </div>
           </form>
         </section>
+        </details>
 
-        <section class="panel grey-panel" aria-labelledby="greyTitle">
+        <section class="panel grey-panel primary-focus" aria-labelledby="greyTitle">
           <div class="panel-head">
             <div>
-              <h2 id="greyTitle">暗盘抢单</h2>
-              <p id="greyState">试跑一次看当前盘口；模拟布防会后台盯暗盘开盘但不真实下单。</p>
+              <h2 id="greyTitle">暗盘第一时间买入</h2>
+              <p id="greyState">先试跑，再模拟布防；实盘只做买入，满足暗盘 TRADING、卖一价不高于最高价、金额/次数风控后才提交限价买单。</p>
             </div>
             <button class="danger-button small" id="killSwitchBtn" type="button">一键停止</button>
           </div>
 
           <form id="greyForm" class="trade-form">
+            <div class="rule-strip" aria-label="暗盘买入触发规则">
+              <span>触发：dark_status = TRADING</span>
+              <span>价格：best_ask <= 最高价</span>
+              <span>金额：最高价 × 股数 <= 最大金额</span>
+              <span>订单：限价买入，不用市价</span>
+            </div>
+
             <label>
               <span>暗盘代码（可多个，逗号/空格/换行分隔）</span>
               <textarea id="greySymbol" name="symbol" autocomplete="off" required>HK.01879</textarea>
@@ -183,20 +193,28 @@
             </div>
 
             <div class="action-row">
-              <label class="switch">
+              <label class="switch subdued-switch is-hidden">
                 <input id="greyDryRun" name="dry_run" type="checkbox" checked>
                 <span></span>
-                <strong id="greyModeText">模拟</strong>
+                <strong id="greyModeText">默认模拟</strong>
               </label>
-              <div class="button-pair">
-                <button class="secondary-button" id="greyEvaluateBtn" type="submit">试跑一次</button>
-                <button class="primary-button" id="greyArmBtn" type="button">开始模拟盯盘</button>
+              <div class="button-pair triad">
+                <button class="secondary-button" id="greyEvaluateBtn" type="button">1. 试跑行情</button>
+                <button class="primary-button" id="greyArmBtn" type="button">2. 模拟布防</button>
+                <button class="danger-button" id="greyRealArmBtn" type="button">3. 确认实盘抢单</button>
               </div>
             </div>
           </form>
+
+          <div class="result-box" id="greyResult" aria-live="polite">
+            <div class="result-title">等待操作</div>
+            <p>点击“试跑行情”会立即读取 OpenD 暗盘报价和盘口；点击“模拟布防”会后台等待暗盘开盘但不真实下单。</p>
+          </div>
         </section>
       </main>
 
+      <details class="advanced-shell">
+        <summary>高级功能：持仓、成本优化、订单回放和普通交易辅助</summary>
       <section class="console-grid" aria-label="暗盘成本优化控制台">
         <section class="panel setup-panel" aria-labelledby="sessionSetupTitle">
           <div class="panel-head compact">
@@ -229,6 +247,7 @@
               <button class="secondary-button" id="dryRunOpenTriggerBtn" type="button">暗盘试跑</button>
               <button class="primary-button" id="startLiveDryRunBtn" type="button">开始实时模拟</button>
               <button class="small-button" id="stopLiveRunBtn" type="button">停止运行</button>
+              <button class="primary-button" id="restartBtn" type="button">重新启动</button>
               <button class="danger-button small" id="createKillSwitchBtn" type="button">创建 kill switch</button>
               <button class="small-button" id="clearKillSwitchBtn" type="button">清除 kill switch</button>
             </div>
@@ -386,6 +405,7 @@
           <button class="small-button" id="exportReplaySummaryBtn" type="button">导出回放摘要 JSON</button>
         </section>
       </section>
+      </details>
 
       <section class="event-panel" aria-labelledby="eventsTitle">
         <div class="panel-head compact">

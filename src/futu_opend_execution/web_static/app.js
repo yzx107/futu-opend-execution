@@ -31,6 +31,8 @@ const els = {
   greyState: $("#greyState"),
   greyEvaluateBtn: $("#greyEvaluateBtn"),
   greyArmBtn: $("#greyArmBtn"),
+  greyRealArmBtn: $("#greyRealArmBtn"),
+  greyResult: $("#greyResult"),
   killSwitchBtn: $("#killSwitchBtn"),
   eventsRefreshBtn: $("#eventsRefreshBtn"),
   eventLog: $("#eventLog"),
@@ -43,6 +45,7 @@ const els = {
   stopLiveRunBtn: $("#stopLiveRunBtn"),
   createKillSwitchBtn: $("#createKillSwitchBtn"),
   clearKillSwitchBtn: $("#clearKillSwitchBtn"),
+  restartBtn: $("#restartBtn"),
   seedInventoryBtn: $("#seedInventoryBtn"),
   resetInventoryBtn: $("#resetInventoryBtn"),
   reconcileInventoryBtn: $("#reconcileInventoryBtn"),
@@ -199,13 +202,14 @@ function greySymbols() {
   return parseGreySymbols(primarySymbol || setupSymbol);
 }
 
-function greyPayload(symbolOverride = "") {
+function greyPayload(symbolOverride = "", options = {}) {
   const symbols = greySymbols();
   const quantity = numberOrNull($("#greyQuantity")?.value) ?? numberOrNull($("#setupQuantity")?.value);
   const maxPrice = numberOrNull($("#greyMaxPrice")?.value) ?? numberOrNull($("#setupMaxPrice")?.value);
   const maxNotional = numberOrNull($("#greyMaxNotional")?.value) ?? numberOrNull($("#setupMaxNotional")?.value);
   const maxAttempts = numberOrNull($("#greyMaxAttempts")?.value) ?? numberOrNull($("#setupMaxOrderAttempts")?.value);
   const coolDownMs = numberOrNull($("#greyCoolDown")?.value) ?? numberOrNull($("#setupCoolDownMs")?.value);
+  const real = options.real ?? !els.greyDryRun.checked;
   return {
     symbol: symbolOverride || symbols[0] || "",
     symbols,
@@ -219,8 +223,8 @@ function greyPayload(symbolOverride = "") {
     opening_burst_seconds: numberOrNull($("#setupOpeningBurstSeconds")?.value),
     opening_burst_cool_down_ms: numberOrNull($("#setupOpeningBurstCoolDownMs")?.value),
     remark: $("#setupRemark")?.value || "web_grey_open",
-    real: !els.greyDryRun.checked,
-    real_mode: !els.greyDryRun.checked,
+    real,
+    real_mode: real,
     acknowledge_real_order: Boolean(els.greyAckReal?.checked),
     confirm_text: els.greyConfirmText?.value.trim() || "",
     timeout_seconds: 600,
@@ -247,6 +251,53 @@ function setGreyStatus(message, level = "") {
   if (!els.greyState) return;
   els.greyState.textContent = message;
   els.greyState.className = level === "error" ? "is-error" : level === "warn" ? "is-warn" : "";
+}
+
+function renderGreyResult(title, rows = [], message = "") {
+  if (!els.greyResult) return;
+  els.greyResult.innerHTML = "";
+
+  const heading = document.createElement("div");
+  heading.className = "result-title";
+  heading.textContent = title;
+  els.greyResult.append(heading);
+
+  if (message) {
+    const paragraph = document.createElement("p");
+    paragraph.textContent = message;
+    els.greyResult.append(paragraph);
+  }
+
+  if (!rows.length) return;
+
+  const list = document.createElement("div");
+  list.className = "result-list";
+  rows.forEach((row) => {
+    const item = document.createElement("div");
+    item.className = `result-row ${row.level || ""}`.trim();
+
+    const symbol = document.createElement("strong");
+    symbol.textContent = row.symbol || "--";
+
+    const action = document.createElement("span");
+    action.textContent = row.action || "--";
+
+    const reason = document.createElement("span");
+    reason.textContent = row.reason || "--";
+
+    const market = document.createElement("span");
+    market.textContent = row.market || "";
+
+    item.append(symbol, action, reason, market);
+    list.append(item);
+  });
+  els.greyResult.append(list);
+}
+
+function greyLevelFromAction(action) {
+  if (action === "ORDER") return "warn";
+  if (action === "BLOCK") return "error";
+  return "ok";
 }
 
 function inventorySeedPayload() {
@@ -286,15 +337,15 @@ function syncModes() {
   els.normalModeText.textContent = els.normalDryRun.checked ? "Dry-run" : "实盘";
   els.normalModeText.className = els.normalDryRun.checked ? "" : "is-live";
   els.normalConfirmWrap.classList.toggle("is-hidden", els.normalDryRun.checked);
-  els.greyModeText.textContent = els.greyDryRun.checked ? "模拟" : "实盘";
-  els.greyModeText.className = els.greyDryRun.checked ? "" : "is-live";
+  els.greyModeText.textContent = "默认模拟";
+  els.greyModeText.className = "";
   if (els.greyEvaluateBtn) {
-    els.greyEvaluateBtn.textContent = els.greyDryRun.checked ? "试跑一次" : "实盘预检并布防";
+    els.greyEvaluateBtn.textContent = "1. 试跑行情";
   }
   if (els.greyArmBtn) {
-    els.greyArmBtn.textContent = els.greyDryRun.checked ? "开始模拟盯盘" : "开始实盘抢单";
-    els.greyArmBtn.classList.toggle("danger-button", !els.greyDryRun.checked);
-    els.greyArmBtn.classList.toggle("primary-button", els.greyDryRun.checked);
+    els.greyArmBtn.textContent = "2. 模拟布防";
+    els.greyArmBtn.classList.add("primary-button");
+    els.greyArmBtn.classList.remove("danger-button");
   }
 }
 
@@ -350,14 +401,25 @@ async function subscribeMarket() {
 }
 
 async function startLiveDryRun() {
-  const payload = greyPayload();
+  const payload = greyPayload("", { real: false });
   const validation = validateGreyPayload(payload);
   if (validation) {
     setGreyStatus(validation, "error");
     addLocalEvent("grey", validation, "error");
+    renderGreyResult("模拟布防未启动", [], validation);
     return;
   }
   setGreyStatus(`正在启动 ${payload.symbols.length} 个代码的实时模拟盯盘，不会真实下单...`, "warn");
+  renderGreyResult(
+    "模拟布防启动中",
+    payload.symbols.map((symbol) => ({
+      symbol,
+      action: "WAIT",
+      reason: "等待 OpenD 暗盘状态变为 TRADING",
+      market: "不会真实下单",
+      level: "warn",
+    })),
+  );
   const results = await Promise.allSettled(
     payload.symbols.map((symbol) => requestJson("/api/grey-open/start-live-dry-run", {
       method: "POST",
@@ -372,16 +434,60 @@ async function startLiveDryRun() {
     const message = `${ok.length} 个已启动，${failed.length} 个失败：${failed.map((result) => result.reason.message).join("；")}`;
     setGreyStatus(message, ok.length ? "warn" : "error");
     addLocalEvent("live", message, ok.length ? "warn" : "error");
+    renderGreyResult("模拟布防结果", [
+      ...ok.map((result) => ({
+        symbol: result.value.symbol,
+        action: "ARMED",
+        reason: "后台等待暗盘 TRADING",
+        market: "模拟",
+        level: "warn",
+      })),
+      ...failed.map((result) => ({
+        symbol: "--",
+        action: "FAILED",
+        reason: result.reason.message,
+        market: "",
+        level: "error",
+      })),
+    ]);
     return;
   }
   const symbols = ok.map((result) => result.value.symbol).join(", ");
   setGreyStatus(`模拟盯盘已启动：${symbols}`, "warn");
   addLocalEvent("live", `实时模拟盯盘已启动：${symbols}`, "warn");
+  renderGreyResult("模拟布防已启动", ok.map((result) => ({
+    symbol: result.value.symbol,
+    action: "ARMED",
+    reason: "后台等待 dark_status = TRADING；触发后只记录 would-submit",
+    market: `timeout ${result.value.timeout_seconds}s`,
+    level: "warn",
+  })));
 }
 
 async function stopLiveRun() {
   const data = await requestJson("/api/grey-open/stop", { method: "POST", body: "{}" });
   addLocalEvent("live", `live run stopped=${!data.running}`, "ok");
+  state.armed = false;
+  syncArmed();
+  renderGreyResult("已发送停止指令", [], "Kill switch 已创建；旧布防线程会在下一轮检查时退出。");
+}
+
+async function restart() {
+  setBusy(els.restartBtn, true);
+  try {
+    const data = await requestJson("/api/restart", { method: "POST", body: "{}" });
+    state.armed = false;
+    syncArmed();
+    addLocalEvent("restart", "系统已重置：Kill Switch 已清除，可以重新布防。", "ok");
+    renderGreyResult("已重新启动", [], "Kill switch 已清除，当前没有活动布防线程，可以重新试跑或布防。");
+    await loadHealth();
+    refreshEvents();
+  } catch (error) {
+    addLocalEvent("restart", error.message, "error");
+    renderGreyResult("重新启动未完成", [], error.message);
+  } finally {
+    setBusy(els.restartBtn, false);
+  }
 }
 
 async function seedInventory() {
@@ -470,83 +576,170 @@ async function submitNormal(event) {
 
 async function evaluateGrey(event) {
   event.preventDefault();
-  const payload = greyPayload();
+  const payload = greyPayload("", { real: false });
   const validation = validateGreyPayload(payload);
   if (validation) {
     setGreyStatus(validation, "error");
     addLocalEvent("grey", validation, "error");
+    renderGreyResult("试跑未执行", [], validation);
     return;
-  }
-  if (payload.real) {
-    if (payload.confirm_text !== "确认实盘" || !payload.acknowledge_real_order) {
-      addLocalEvent("grey", "实盘暗盘抢单前必须输入：确认实盘，并勾选确认框", "warn");
-      return;
-    }
   }
   setBusy(event.submitter, true);
   try {
-    const url = payload.real ? "/api/grey-open/start-live-real-buy-only" : "/api/grey/evaluate";
     setGreyStatus(
-      payload.real
-        ? `正在做 ${payload.symbols.length} 个代码的实盘暗盘买入预检并启动布防...`
-        : `正在读取 ${payload.symbols.length} 个代码的 OpenD 暗盘报价和盘口，做一次试跑评估...`,
+      `正在读取 ${payload.symbols.length} 个代码的 OpenD 暗盘报价和盘口，做一次试跑评估...`,
       "warn",
     );
+    renderGreyResult("试跑中", payload.symbols.map((symbol) => ({
+      symbol,
+      action: "READ",
+      reason: "读取报价与一档盘口",
+      market: "OpenD",
+      level: "warn",
+    })));
     const results = await Promise.allSettled(
-      payload.symbols.map((symbol) => requestJson(url, {
+      payload.symbols.map((symbol) => requestJson("/api/grey/evaluate", {
         method: "POST",
         body: JSON.stringify({ ...payload, symbol }),
       })),
     );
     const ok = results.filter((result) => result.status === "fulfilled");
     const failed = results.filter((result) => result.status === "rejected");
-    state.armed = Boolean(payload.real && ok.length);
+    state.armed = false;
     syncArmed();
     if (failed.length) {
       const message = `${ok.length} 个成功，${failed.length} 个失败：${failed.map((result) => result.reason.message).join("；")}`;
       setGreyStatus(message, ok.length ? "warn" : "error");
       addLocalEvent("grey", message, ok.length ? "warn" : "error");
+      renderGreyResult("试跑结果", [
+        ...ok.map((result) => {
+          const data = result.value;
+          const action = data?.decision?.action || "--";
+          const quote = data?.signal || {};
+          return {
+            symbol: quote.symbol || "--",
+            action,
+            reason: data?.decision?.reason || "--",
+            market: `暗盘 ${quote.dark_status || "--"} / 卖一 ${quote.best_ask ?? "--"}`,
+            level: greyLevelFromAction(action),
+          };
+        }),
+        ...failed.map((result) => ({
+          symbol: "--",
+          action: "FAILED",
+          reason: result.reason.message,
+          market: "",
+          level: "error",
+        })),
+      ]);
       return;
     }
-    if (payload.real) {
-      const symbols = ok.map((result) => result.value.symbol).join(", ");
-      setGreyStatus(`实盘暗盘买入已布防：${symbols}`, "warn");
-      addLocalEvent("grey", `实盘暗盘买入已布防：${symbols}`, "warn");
-      refreshEvents();
-      return;
-    }
-    const messages = ok.map((result) => {
+    const rows = ok.map((result) => {
       const data = result.value;
       const action = data?.decision?.action || "--";
       const reason = data?.decision?.reason || "--";
-      const symbol = data?.signal?.symbol || data?.decision?.intent?.symbol || "--";
-      return `${symbol}: ${action} / ${reason}`;
+      const quote = data?.signal || {};
+      const symbol = quote.symbol || data?.decision?.intent?.symbol || "--";
+      return {
+        symbol,
+        action,
+        reason,
+        market: `暗盘 ${quote.dark_status || "--"} / 买一 ${quote.best_bid ?? "--"} / 卖一 ${quote.best_ask ?? "--"}`,
+        level: greyLevelFromAction(action),
+      };
     });
-    setGreyStatus(`试跑完成：${messages.join("；")}`, messages.some((message) => message.includes("ORDER")) ? "warn" : "");
+    const messages = rows.map((row) => `${row.symbol}: ${row.action} / ${row.reason}`);
+    setGreyStatus(`试跑完成：${messages.join("；")}`, rows.some((row) => row.action === "ORDER") ? "warn" : "");
+    renderGreyResult(
+      "试跑完成",
+      rows,
+      rows.some((row) => row.action === "ORDER")
+        ? "当前规则已经满足下单条件；实盘仍需点击红色按钮单独布防。"
+        : "没有真实下单。若原因是 dark_status 不是 TRADING，说明系统会继续等暗盘开盘。",
+    );
     addLocalEvent("grey", `试跑完成：${messages.join("；")}`, "ok");
     refreshEvents();
   } catch (error) {
     setGreyStatus(error.message, "error");
     addLocalEvent("grey", error.message, "error");
+    renderGreyResult("试跑失败", [], error.message);
   } finally {
     setBusy(event.submitter, false);
   }
 }
 
-async function toggleArm() {
-  if (els.greyDryRun.checked) {
-    setBusy(els.greyArmBtn, true);
-    try {
-      await startLiveDryRun();
-    } catch (error) {
-      setGreyStatus(error.message, "error");
-      addLocalEvent("grey", error.message, "error");
-    } finally {
-      setBusy(els.greyArmBtn, false);
-    }
+async function startLiveRealBuy() {
+  const payload = greyPayload("", { real: true });
+  const validation = validateGreyPayload(payload);
+  if (validation) {
+    setGreyStatus(validation, "error");
+    addLocalEvent("grey", validation, "error");
+    renderGreyResult("实盘布防未启动", [], validation);
     return;
   }
-  evaluateGrey(new Event("submit"));
+  if (payload.confirm_text !== "确认实盘" || !payload.acknowledge_real_order) {
+    const message = "实盘暗盘抢单前必须输入：确认实盘，并勾选确认框";
+    setGreyStatus(message, "error");
+    addLocalEvent("grey", message, "warn");
+    renderGreyResult("实盘布防未启动", [], message);
+    return;
+  }
+
+  setBusy(els.greyRealArmBtn, true);
+  try {
+    setGreyStatus(`正在启动 ${payload.symbols.length} 个代码的实盘暗盘买入布防...`, "warn");
+    renderGreyResult("实盘布防启动中", payload.symbols.map((symbol) => ({
+      symbol,
+      action: "ARMING",
+      reason: "服务端将再次检查 FUTU_ALLOW_REAL_TRADE、确认短语、kill switch、金额和次数限制",
+      market: "真实限价买入",
+      level: "warn",
+    })));
+    const results = await Promise.allSettled(
+      payload.symbols.map((symbol) => requestJson("/api/grey-open/start-live-real-buy-only", {
+        method: "POST",
+        body: JSON.stringify({ ...payload, symbol }),
+      })),
+    );
+    const ok = results.filter((result) => result.status === "fulfilled");
+    const failed = results.filter((result) => result.status === "rejected");
+    state.armed = ok.length > 0;
+    syncArmed();
+    const rows = [
+      ...ok.map((result) => ({
+        symbol: result.value.symbol,
+        action: "REAL_ARMED",
+        reason: "等待 dark_status = TRADING；满足规则后提交真实限价买单",
+        market: `最多 ${result.value.max_order_attempts} 次 / timeout ${result.value.timeout_seconds}s`,
+        level: "warn",
+      })),
+      ...failed.map((result) => ({
+        symbol: "--",
+        action: "BLOCKED",
+        reason: result.reason.message,
+        market: "未启动",
+        level: "error",
+      })),
+    ];
+    if (failed.length) {
+      const message = `${ok.length} 个已布防，${failed.length} 个被拦截：${failed.map((result) => result.reason.message).join("；")}`;
+      setGreyStatus(message, ok.length ? "warn" : "error");
+      addLocalEvent("grey", message, ok.length ? "warn" : "error");
+      renderGreyResult("实盘布防结果", rows);
+      return;
+    }
+    const symbols = ok.map((result) => result.value.symbol).join(", ");
+    setGreyStatus(`实盘暗盘买入已布防：${symbols}`, "warn");
+    addLocalEvent("grey", `实盘暗盘买入已布防：${symbols}`, "warn");
+    renderGreyResult("实盘暗盘买入已布防", rows, "现在不要重复点击；如需停止，点一键停止，它会创建 kill switch。");
+    refreshEvents();
+  } catch (error) {
+    setGreyStatus(error.message, "error");
+    addLocalEvent("grey", error.message, "error");
+    renderGreyResult("实盘布防失败", [], error.message);
+  } finally {
+    setBusy(els.greyRealArmBtn, false);
+  }
 }
 
 async function killSwitch() {
@@ -588,7 +781,6 @@ async function refreshAll() {
     await Promise.allSettled([
       loadHealth(),
       refreshEvents(),
-      refreshQuote(els.normalSymbol.value, els.normalQuote),
     ]);
   } finally {
     setBusy(els.refreshAllBtn, false);
@@ -607,7 +799,20 @@ els.normalQuoteBtn.addEventListener("click", async () => {
     setBusy(els.normalQuoteBtn, false);
   }
 });
-els.greyArmBtn.addEventListener("click", toggleArm);
+els.greyEvaluateBtn?.addEventListener("click", (event) => evaluateGrey(event));
+els.greyArmBtn.addEventListener("click", async () => {
+  setBusy(els.greyArmBtn, true);
+  try {
+    await startLiveDryRun();
+  } catch (error) {
+    setGreyStatus(error.message, "error");
+    addLocalEvent("grey", error.message, "error");
+    renderGreyResult("模拟布防失败", [], error.message);
+  } finally {
+    setBusy(els.greyArmBtn, false);
+  }
+});
+els.greyRealArmBtn?.addEventListener("click", startLiveRealBuy);
 els.killSwitchBtn.addEventListener("click", killSwitch);
 els.validateConfigBtn?.addEventListener("click", () => validateConfig().catch((error) => addLocalEvent("config", error.message, "error")));
 els.subscribeBtn?.addEventListener("click", () => subscribeMarket().catch((error) => addLocalEvent("subscribe", error.message, "error")));
@@ -616,6 +821,7 @@ els.startLiveDryRunBtn?.addEventListener("click", () => startLiveDryRun().catch(
 els.stopLiveRunBtn?.addEventListener("click", () => stopLiveRun().catch((error) => addLocalEvent("live", error.message, "error")));
 els.createKillSwitchBtn?.addEventListener("click", () => requestJson("/api/kill-switch/create", { method: "POST", body: "{}" }).then(loadHealth).catch((error) => addLocalEvent("kill", error.message, "error")));
 els.clearKillSwitchBtn?.addEventListener("click", () => requestJson("/api/kill-switch/clear", { method: "POST", body: "{}" }).then(loadHealth).catch((error) => addLocalEvent("kill", error.message, "error")));
+els.restartBtn?.addEventListener("click", restart);
 els.seedInventoryBtn?.addEventListener("click", () => seedInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
 els.resetInventoryBtn?.addEventListener("click", () => resetInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
 els.reconcileInventoryBtn?.addEventListener("click", () => reconcileInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));

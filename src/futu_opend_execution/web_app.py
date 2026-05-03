@@ -223,6 +223,9 @@ def build_app_handler(state: WebState):
             if parsed.path == "/api/grey-open/stop":
                 self._handle_json(lambda: api_stop_live_run(state))
                 return
+            if parsed.path == "/api/restart":
+                self._handle_json(lambda: api_restart(state))
+                return
             if parsed.path == "/api/kill-switch/create":
                 self._handle_json(lambda: api_kill_switch(state, {"enabled": True}))
                 return
@@ -582,6 +585,33 @@ def api_stop_live_run(state: WebState) -> dict[str, Any]:
         )
     _log_event(state, "web_live_run_stopped", kill_switch_file=str(state.kill_switch_file))
     return {"running": False, "kill_switch": state.kill_switch_file.exists()}
+
+
+def api_restart(state: WebState) -> dict[str, Any]:
+    """Clear kill switch only after active live workers have stopped."""
+    state.ui_state.live_running = False
+    state.ui_state.last_error = None
+    if _has_live_threads(state):
+        if not state.kill_switch_file.exists():
+            state.kill_switch_file.write_text(
+                f"restart_blocked_at={datetime.now(UTC).isoformat()}\n",
+                encoding="utf-8",
+            )
+        _log_event(
+            state,
+            "web_restart_blocked_active_threads",
+            kill_switch_file=str(state.kill_switch_file),
+        )
+        raise ExecutionValidationError(
+            "仍有暗盘布防线程未退出；已保持/创建 Kill Switch。请等几秒刷新后再重新启动。"
+        )
+    if state.kill_switch_file.exists():
+        state.kill_switch_file.unlink()
+    with state._lock:
+        state.live_threads.clear()
+        state.live_thread = None
+    _log_event(state, "web_restart_requested")
+    return {"running": False, "kill_switch": False}
 
 
 def _run_live_real_buy_worker(
