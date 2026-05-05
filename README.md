@@ -509,6 +509,7 @@ Web UI 当前支持：
 - 全局 kill switch
 - 日志 tail
 - `/api/health?active=1&symbol=00700` 主动探测 OpenD 报价链路
+- `/api/accounts` 只返回脱敏账户摘要，`acc_id`、`card_num`、`uni_card_num` 不以原文出现在 Web API 响应里
 
 健康检查接口示例：
 

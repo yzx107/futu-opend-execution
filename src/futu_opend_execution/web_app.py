@@ -406,10 +406,42 @@ def api_accounts(state: WebState) -> dict[str, Any]:
     with FutuNormalTradeClient(state.config) as client:
         accounts = client.list_accounts()
     return {
-        "configured_acc_id": state.config.futu_acc_id,
+        "configured_acc_id": _redact_identifier(state.config.futu_acc_id),
         "configured_acc_index": state.config.futu_acc_index,
-        "accounts": accounts,
+        "accounts": [
+            _sanitize_account_summary(account)
+            for account in accounts
+            if isinstance(account, dict)
+        ],
     }
+
+
+def _sanitize_account_summary(account: dict[str, Any]) -> dict[str, Any]:
+    allowed_keys = {
+        "trd_env",
+        "sim_acc_type",
+        "trdmarket_auth",
+        "acc_type",
+        "acc_role",
+        "acc_status",
+        "security_firm",
+    }
+    summary = {key: account.get(key) for key in allowed_keys if key in account}
+    for key in ["acc_id", "card_num", "uni_card_num"]:
+        if key in account:
+            summary[key] = _redact_identifier(account.get(key))
+    return summary
+
+
+def _redact_identifier(value: Any) -> Any:
+    if value in {None, ""}:
+        return None
+    text = str(value)
+    if text in {"0", "N/A"}:
+        return value
+    if len(text) <= 4:
+        return "***"
+    return f"***{text[-4:]}"
 
 
 def api_state(state: WebState) -> dict[str, Any]:

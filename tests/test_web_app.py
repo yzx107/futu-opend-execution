@@ -56,6 +56,7 @@ class FakeNormalTradeClient:
         return [
             {
                 "acc_id": 123,
+                "card_num": "1001302006092966",
                 "trd_env": "SIMULATE",
                 "uni_card_num": "safe-redacted",
             }
@@ -203,7 +204,9 @@ class WebAppTests(unittest.TestCase):
 
         self.assertEqual(payload["configured_acc_id"], 0)
         self.assertEqual(payload["configured_acc_index"], 0)
-        self.assertEqual(payload["accounts"][0]["acc_id"], 123)
+        self.assertEqual(payload["accounts"][0]["acc_id"], "***")
+        self.assertEqual(payload["accounts"][0]["card_num"], "***2966")
+        self.assertEqual(payload["accounts"][0]["uni_card_num"], "***cted")
 
     def test_normal_order_dry_run_does_not_place_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
