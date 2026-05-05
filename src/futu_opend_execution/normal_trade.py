@@ -35,6 +35,10 @@ def _to_decimal(value: Decimal | str | int | float | None) -> Decimal | None:
     return Decimal(str(value))
 
 
+def _is_simulate_env(trd_env) -> bool:
+    return str(trd_env).upper().endswith("SIMULATE")
+
+
 def _normalize_symbol(symbol: str) -> str:
     normalized = symbol.strip().upper()
     if "." in normalized:
@@ -195,6 +199,12 @@ class FutuNormalTradeClient:
             raw_order_book=raw_order_book,
         )
 
+    def list_accounts(self) -> Any:
+        ret, data = self._trade_context.get_acc_list()
+        if ret != self._futu.RET_OK:
+            raise BrokerResponseError(f"get_acc_list failed: {data}")
+        return _table_to_payload(data)
+
     def _subscribe_quote(self, broker_symbol: str) -> None:
         ret, data = self._quote_context.subscribe(
             [broker_symbol],
@@ -224,15 +234,23 @@ class FutuNormalTradeClient:
         return self.place_order(intent)
 
     def place_order(self, intent: NormalTradeIntent) -> Any:
-        self.unlock_trade()
+        return self._place_order(intent, trd_env=self._futu.TrdEnv.REAL, unlock=True)
+
+    def place_simulate_order(self, intent: NormalTradeIntent) -> Any:
+        return self._place_order(intent, trd_env=self._futu.TrdEnv.SIMULATE, unlock=False)
+
+    def _place_order(self, intent: NormalTradeIntent, *, trd_env, unlock: bool) -> Any:
+        if unlock:
+            self.unlock_trade()
+        acc_id = self._resolve_acc_id(trd_env)
         ret, data = self._trade_context.place_order(
             price=float(intent.broker_price),
             qty=float(intent.quantity),
             code=intent.symbol,
             trd_side=self._resolve_side(intent.side),
             order_type=self._resolve_order_type(intent.order_type),
-            trd_env=self._futu.TrdEnv.REAL,
-            acc_id=self._config.futu_acc_id,
+            trd_env=trd_env,
+            acc_id=acc_id,
             acc_index=self._config.futu_acc_index,
             time_in_force=self._futu.TimeInForce.DAY,
             remark=intent.remark,
@@ -241,12 +259,14 @@ class FutuNormalTradeClient:
             raise BrokerResponseError(f"place_order failed: {data}")
         return _table_to_payload(data)
 
-    def query_order(self, *, order_id: str, symbol: str) -> Any:
+    def query_order(self, *, order_id: str, symbol: str, trd_env=None) -> Any:
+        resolved_env = trd_env or self._futu.TrdEnv.REAL
+        acc_id = self._resolve_acc_id(resolved_env)
         ret, data = self._trade_context.order_list_query(
             order_id=order_id,
             code=_normalize_symbol(symbol),
-            trd_env=self._futu.TrdEnv.REAL,
-            acc_id=self._config.futu_acc_id,
+            trd_env=resolved_env,
+            acc_id=acc_id,
             acc_index=self._config.futu_acc_index,
             refresh_cache=True,
         )
@@ -254,18 +274,40 @@ class FutuNormalTradeClient:
             raise BrokerResponseError(f"order_list_query failed: {data}")
         return _table_to_payload(data)
 
+    def _resolve_acc_id(self, trd_env) -> int:
+        if not _is_simulate_env(trd_env):
+            return self._config.futu_acc_id
+        if self._config.futu_sim_acc_id:
+            return self._config.futu_sim_acc_id
+        for account in self.list_accounts():
+            if not isinstance(account, dict):
+                continue
+            if str(account.get("trd_env") or "").upper() != "SIMULATE":
+                continue
+            auth = account.get("trdmarket_auth")
+            if isinstance(auth, list) and "HK" not in {str(item).upper() for item in auth}:
+                continue
+            sim_type = str(account.get("sim_acc_type") or "").upper()
+            acc_type = str(account.get("acc_type") or "").upper()
+            if sim_type in {"STOCK", "N/A", ""} or acc_type in {"CASH", "MARGIN"}:
+                return int(account.get("acc_id") or 0)
+        raise BrokerConfigurationError(
+            "No HK SIMULATE stock account found. Set FUTU_SIM_ACC_ID from /api/accounts."
+        )
+
     def wait_for_terminal_order(
         self,
         *,
         order_id: str,
         symbol: str,
+        trd_env=None,
         timeout_seconds: float = 8.0,
         poll_interval_seconds: float = 0.5,
     ) -> list[Any]:
         timeline: list[Any] = []
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() <= deadline:
-            snapshot = self.query_order(order_id=order_id, symbol=symbol)
+            snapshot = self.query_order(order_id=order_id, symbol=symbol, trd_env=trd_env)
             timeline.append(snapshot)
             first = snapshot[0] if isinstance(snapshot, list) and snapshot else {}
             status = str(first.get("order_status", "")).upper()

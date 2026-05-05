@@ -14,6 +14,7 @@ from futu_opend_execution.web_app import (
     STATIC_ROOT,
     WebState,
     api_approve_cost_reducer_intent,
+    api_accounts,
     api_cost_reducer_config,
     api_inventory_seed_dry_run,
     api_health,
@@ -30,6 +31,7 @@ from futu_opend_execution.web_app import (
 
 class FakeNormalTradeClient:
     place_count = 0
+    simulate_place_count = 0
 
     def __init__(self, config) -> None:
         self.config = config
@@ -50,11 +52,25 @@ class FakeNormalTradeClient:
             raw_quote={"name": "腾讯控股"},
         )
 
+    def list_accounts(self):
+        return [
+            {
+                "acc_id": 123,
+                "trd_env": "SIMULATE",
+                "uni_card_num": "safe-redacted",
+            }
+        ]
+
     def place_order(self, intent):
         type(self).place_count += 1
         return [{"order_id": "1", "code": intent.symbol, "order_status": "SUBMITTED"}]
 
-    def wait_for_terminal_order(self, *, order_id: str, symbol: str):
+    def place_simulate_order(self, intent):
+        type(self).simulate_place_count += 1
+        return [{"order_id": "sim-1", "code": intent.symbol, "order_status": "SUBMITTED"}]
+
+    def wait_for_terminal_order(self, *, order_id: str, symbol: str, trd_env=None):
+        del trd_env
         return [[{"order_id": order_id, "code": symbol, "order_status": "FILLED_ALL"}]]
 
 
@@ -88,6 +104,9 @@ class FakeThread:
 
     def is_alive(self) -> bool:
         return self.started
+
+    def join(self, timeout=None) -> None:
+        self.join_timeout = timeout
 
 
 def make_state(temp_dir: str, *, allow_real_trade: bool = False) -> WebState:
@@ -172,9 +191,24 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(payload["quote"]["lot_size"], 100)
         self.assertEqual(payload["quote"]["name"], "腾讯控股")
 
+    def test_accounts_api_lists_configured_and_available_accounts(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state = make_state(temp_dir)
+
+            with patch(
+                "futu_opend_execution.web_app.FutuNormalTradeClient",
+                FakeNormalTradeClient,
+            ):
+                payload = api_accounts(state)
+
+        self.assertEqual(payload["configured_acc_id"], 0)
+        self.assertEqual(payload["configured_acc_index"], 0)
+        self.assertEqual(payload["accounts"][0]["acc_id"], 123)
+
     def test_normal_order_dry_run_does_not_place_order(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             FakeNormalTradeClient.place_count = 0
+            FakeNormalTradeClient.simulate_place_count = 0
             state = make_state(temp_dir)
 
             with patch(
@@ -198,6 +232,38 @@ class WebAppTests(unittest.TestCase):
         self.assertFalse(payload["submitted"])
         self.assertEqual(payload["intent"]["quantity"], 100)
         self.assertEqual(FakeNormalTradeClient.place_count, 0)
+        self.assertEqual(FakeNormalTradeClient.simulate_place_count, 0)
+
+    def test_normal_order_paper_uses_simulate_trade_env(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            FakeNormalTradeClient.place_count = 0
+            FakeNormalTradeClient.simulate_place_count = 0
+            state = make_state(temp_dir, allow_real_trade=False)
+
+            with patch(
+                "futu_opend_execution.web_app.FutuNormalTradeClient",
+                FakeNormalTradeClient,
+            ):
+                payload = api_normal_order(
+                    state,
+                    {
+                        "symbol": "00700",
+                        "side": "BUY",
+                        "order_type": "NORMAL",
+                        "quantity_mode": "LOTS",
+                        "lots": 1,
+                        "limit_price": "495",
+                        "max_notional": "50000",
+                        "paper": True,
+                        "real": False,
+                    },
+                )
+
+        self.assertTrue(payload["submitted"])
+        self.assertFalse(payload["dry_run"])
+        self.assertTrue(payload["paper"])
+        self.assertEqual(FakeNormalTradeClient.place_count, 0)
+        self.assertEqual(FakeNormalTradeClient.simulate_place_count, 1)
 
     def test_real_order_requires_environment_and_confirm_text(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -312,7 +378,7 @@ class WebAppTests(unittest.TestCase):
             with self.assertRaises(ExecutionValidationError):
                 api_start_live_dry_run(state, payload)
 
-    def test_restart_blocks_until_live_threads_exit(self) -> None:
+    def test_restart_signals_stop_when_live_threads_are_still_exiting(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             state = make_state(temp_dir)
             FakeThread.instances = []
@@ -320,16 +386,17 @@ class WebAppTests(unittest.TestCase):
 
             with patch("futu_opend_execution.web_app.Thread", FakeThread):
                 api_start_live_dry_run(state, payload)
-                with self.assertRaises(ExecutionValidationError):
-                    api_restart(state)
+                result = api_restart(state)
 
+            self.assertFalse(result["ready"])
+            self.assertTrue(result["running"])
             self.assertTrue(state.kill_switch_file.exists())
             events = [
                 json.loads(line)
                 for line in state.log_file.read_text(encoding="utf-8").splitlines()
             ]
             self.assertTrue(
-                any(event["event"] == "web_restart_blocked_active_threads" for event in events)
+                any(event["event"] == "web_restart_waiting_for_threads" for event in events)
             )
 
     def test_restart_clears_kill_switch_when_no_live_threads(self) -> None:
@@ -672,11 +739,14 @@ class WebAppTests(unittest.TestCase):
             "暗盘第一时间买入",
             "greyRealArmBtn",
             "greyResult",
+            "resetReadyBtn",
+            "一键 Reset",
             "高级功能",
             "试跑行情",
             "模拟布防",
+            "自动按最高价 × 股数计算",
             "数量（股，不是手）",
-            "HK.01879",
+            "HK.01609",
             "多个代码",
             "50/50 持仓",
         ):

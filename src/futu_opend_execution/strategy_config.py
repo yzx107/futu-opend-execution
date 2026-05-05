@@ -21,7 +21,7 @@ class ExecutionMode(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class GreyOpenRuntimeParams:
-    symbol: str = "HK.01879"
+    symbol: str = "HK.01609"
     quantity: int = 1000
     lot_size: int = 100
     max_price: Decimal = Decimal("0")
@@ -75,7 +75,7 @@ class CostReducerRuntimeParams:
 class WebUiRuntimeState:
     execution_mode: ExecutionMode = ExecutionMode.LIVE_DRY_RUN
     real_mode_confirmed: bool = False
-    active_symbol: str = "HK.01879"
+    active_symbol: str = "HK.01609"
     live_running: bool = False
     event_count: int = 0
     last_error: str | None = None

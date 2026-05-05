@@ -8,7 +8,10 @@ from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 
+from futu_opend_execution.config import RuntimeConfig
+from futu_opend_execution.execution.broker import BrokerConfigurationError
 from futu_opend_execution.normal_trade import (
+    FutuNormalTradeClient,
     NormalOrderType,
     NormalQuantityMode,
     NormalTradeQuote,
@@ -53,6 +56,51 @@ class FakeNormalTradeClient:
 
 
 class NormalTradeTests(unittest.TestCase):
+    def test_simulate_account_can_be_configured_from_env(self) -> None:
+        config = RuntimeConfig.from_env({"FUTU_SIM_ACC_ID": "15091974"})
+
+        self.assertEqual(config.futu_sim_acc_id, 15091974)
+
+    def test_resolve_simulate_account_uses_configured_sim_acc_id(self) -> None:
+        client = FutuNormalTradeClient.__new__(FutuNormalTradeClient)
+        client._config = RuntimeConfig(futu_acc_id=1, futu_sim_acc_id=15091974)
+
+        self.assertEqual(client._resolve_acc_id("SIMULATE"), 15091974)
+        self.assertEqual(client._resolve_acc_id("REAL"), 1)
+
+    def test_resolve_simulate_account_selects_hk_stock_sim_account(self) -> None:
+        client = FutuNormalTradeClient.__new__(FutuNormalTradeClient)
+        client._config = RuntimeConfig(futu_acc_id=281756479117805085)
+        client.list_accounts = lambda: [
+            {
+                "acc_id": 281756479117805085,
+                "trd_env": "REAL",
+                "trdmarket_auth": ["HK"],
+            },
+            {
+                "acc_id": 15091977,
+                "trd_env": "SIMULATE",
+                "sim_acc_type": "OPTION",
+                "trdmarket_auth": ["HK"],
+            },
+            {
+                "acc_id": 15091974,
+                "trd_env": "SIMULATE",
+                "sim_acc_type": "STOCK",
+                "trdmarket_auth": ["HK"],
+            },
+        ]
+
+        self.assertEqual(client._resolve_acc_id("SIMULATE"), 15091974)
+
+    def test_resolve_simulate_account_fails_closed_without_stock_account(self) -> None:
+        client = FutuNormalTradeClient.__new__(FutuNormalTradeClient)
+        client._config = RuntimeConfig(futu_acc_id=281756479117805085)
+        client.list_accounts = lambda: [{"acc_id": 1, "trd_env": "REAL"}]
+
+        with self.assertRaises(BrokerConfigurationError):
+            client._resolve_acc_id("SIMULATE")
+
     def test_build_one_lot_intent_uses_quote_lot_size(self) -> None:
         quote = NormalTradeQuote(
             symbol="00700",

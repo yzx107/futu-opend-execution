@@ -1,9 +1,12 @@
 const state = {
   armed: false,
   events: [],
+  autoGreyMaxNotional: "",
+  greyMaxNotionalEdited: false,
 };
 
 const MAX_GREY_SYMBOLS = 5;
+const GREY_ARM_TIMEOUT_SECONDS = 14400;
 
 const $ = (selector) => document.querySelector(selector);
 
@@ -28,6 +31,9 @@ const els = {
   greyModeText: $("#greyModeText"),
   greyConfirmText: $("#greyConfirmText"),
   greyAckReal: $("#greyAckReal"),
+  greyMaxPrice: $("#greyMaxPrice"),
+  greyQuantity: $("#greyQuantity"),
+  greyMaxNotional: $("#greyMaxNotional"),
   greyState: $("#greyState"),
   greyEvaluateBtn: $("#greyEvaluateBtn"),
   greyArmBtn: $("#greyArmBtn"),
@@ -45,6 +51,7 @@ const els = {
   stopLiveRunBtn: $("#stopLiveRunBtn"),
   createKillSwitchBtn: $("#createKillSwitchBtn"),
   clearKillSwitchBtn: $("#clearKillSwitchBtn"),
+  resetReadyBtn: $("#resetReadyBtn"),
   restartBtn: $("#restartBtn"),
   seedInventoryBtn: $("#seedInventoryBtn"),
   resetInventoryBtn: $("#resetInventoryBtn"),
@@ -61,6 +68,15 @@ function nowTime() {
 function setBusy(button, busy) {
   if (!button) return;
   button.disabled = busy;
+}
+
+function setResetBusy(busy) {
+  setBusy(els.restartBtn, busy);
+  setBusy(els.resetReadyBtn, busy);
+}
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
 function compactJson(value) {
@@ -159,6 +175,41 @@ function numberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function formatMoney(value) {
+  if (!Number.isFinite(value)) return "";
+  return value.toFixed(2);
+}
+
+function autoFillGreyMaxNotional({ force = false } = {}) {
+  if (!els.greyMaxNotional) return;
+  const maxPrice = numberOrNull(els.greyMaxPrice?.value);
+  const quantity = numberOrNull(els.greyQuantity?.value);
+  if (!(maxPrice > 0) || !(quantity > 0)) return;
+
+  const calculated = formatMoney(maxPrice * quantity);
+  const current = els.greyMaxNotional.value.trim();
+  const shouldUpdate =
+    force ||
+    !state.greyMaxNotionalEdited ||
+    current === "" ||
+    current === state.autoGreyMaxNotional;
+
+  state.autoGreyMaxNotional = calculated;
+  if (shouldUpdate) {
+    els.greyMaxNotional.value = calculated;
+    state.greyMaxNotionalEdited = false;
+  }
+}
+
+function markGreyMaxNotionalEdited() {
+  const current = els.greyMaxNotional?.value.trim() || "";
+  state.greyMaxNotionalEdited =
+    current !== "" && current !== state.autoGreyMaxNotional;
+  if (!state.greyMaxNotionalEdited) {
+    autoFillGreyMaxNotional();
+  }
+}
+
 function checkedValue(form, name) {
   return new FormData(form).get(name);
 }
@@ -227,7 +278,7 @@ function greyPayload(symbolOverride = "", options = {}) {
     real_mode: real,
     acknowledge_real_order: Boolean(els.greyAckReal?.checked),
     confirm_text: els.greyConfirmText?.value.trim() || "",
-    timeout_seconds: 600,
+    timeout_seconds: GREY_ARM_TIMEOUT_SECONDS,
     poll_interval_ms: 50,
   };
 }
@@ -473,20 +524,41 @@ async function stopLiveRun() {
 }
 
 async function restart() {
-  setBusy(els.restartBtn, true);
+  setResetBusy(true);
   try {
-    const data = await requestJson("/api/restart", { method: "POST", body: "{}" });
+    let data = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      data = await requestJson("/api/restart", { method: "POST", body: "{}" });
+      if (data.ready !== false) break;
+      state.armed = false;
+      syncArmed();
+      const message = data.message || "旧布防线程仍在退出中，正在继续等待。";
+      setGreyStatus(message, "warn");
+      renderGreyResult("Reset 等待中", [], message);
+      addLocalEvent("restart", message, "warn");
+      await delay(1000);
+    }
     state.armed = false;
     syncArmed();
-    addLocalEvent("restart", "系统已重置：Kill Switch 已清除，可以重新布防。", "ok");
-    renderGreyResult("已重新启动", [], "Kill switch 已清除，当前没有活动布防线程，可以重新试跑或布防。");
+    if (data?.ready === false) {
+      const message = data.message || "旧布防线程仍在退出中；Kill Switch 已保持。";
+      setGreyStatus(message, "warn");
+      renderGreyResult("Reset 未完成", [], message);
+      addLocalEvent("restart", message, "warn");
+    } else {
+      const message = data?.message || "Kill Switch 已清除，可以重新布防。";
+      setGreyStatus(message, "ok");
+      renderGreyResult("已恢复可布防", [], message);
+      addLocalEvent("restart", message, "ok");
+    }
     await loadHealth();
     refreshEvents();
   } catch (error) {
+    setGreyStatus(error.message, "error");
     addLocalEvent("restart", error.message, "error");
-    renderGreyResult("重新启动未完成", [], error.message);
+    renderGreyResult("Reset 失败", [], error.message);
   } finally {
-    setBusy(els.restartBtn, false);
+    setResetBusy(false);
   }
 }
 
@@ -821,6 +893,7 @@ els.startLiveDryRunBtn?.addEventListener("click", () => startLiveDryRun().catch(
 els.stopLiveRunBtn?.addEventListener("click", () => stopLiveRun().catch((error) => addLocalEvent("live", error.message, "error")));
 els.createKillSwitchBtn?.addEventListener("click", () => requestJson("/api/kill-switch/create", { method: "POST", body: "{}" }).then(loadHealth).catch((error) => addLocalEvent("kill", error.message, "error")));
 els.clearKillSwitchBtn?.addEventListener("click", () => requestJson("/api/kill-switch/clear", { method: "POST", body: "{}" }).then(loadHealth).catch((error) => addLocalEvent("kill", error.message, "error")));
+els.resetReadyBtn?.addEventListener("click", restart);
 els.restartBtn?.addEventListener("click", restart);
 els.seedInventoryBtn?.addEventListener("click", () => seedInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
 els.resetInventoryBtn?.addEventListener("click", () => resetInventory().catch((error) => addLocalEvent("inventory", error.message, "error")));
@@ -831,6 +904,9 @@ els.eventsRefreshBtn.addEventListener("click", refreshEvents);
 els.refreshAllBtn.addEventListener("click", refreshAll);
 els.normalDryRun.addEventListener("change", syncModes);
 els.greyDryRun.addEventListener("change", syncModes);
+els.greyMaxPrice?.addEventListener("input", () => autoFillGreyMaxNotional());
+els.greyQuantity?.addEventListener("input", () => autoFillGreyMaxNotional());
+els.greyMaxNotional?.addEventListener("input", markGreyMaxNotionalEdited);
 els.normalForm.querySelectorAll('input[name="order_type"]').forEach((input) => {
   input.addEventListener("change", syncOrderType);
 });
@@ -838,6 +914,7 @@ els.normalForm.querySelectorAll('input[name="order_type"]').forEach((input) => {
 syncModes();
 syncOrderType();
 syncArmed();
+autoFillGreyMaxNotional();
 renderEvents([]);
 refreshAll();
 setInterval(loadHealth, 15000);

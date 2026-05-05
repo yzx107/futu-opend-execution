@@ -476,6 +476,11 @@ pre {
   min-width: min(560px, 100%);
 }
 
+.button-pair.header-actions {
+  grid-template-columns: minmax(92px, 1fr) minmax(86px, 1fr);
+  min-width: 210px;
+}
+
 .switch {
   display: inline-flex;
   grid-template-columns: none;

@@ -994,7 +994,19 @@ def run_live(
             if decision.intent is not None:
                 logger.log("order_request", dry_run=not real, intent=decision.intent)
                 if real:
-                    response = client.place_real_limit_buy(decision.intent)
+                    try:
+                        response = client.place_real_limit_buy(decision.intent)
+                    except BrokerResponseError as exc:
+                        logger.log(
+                            "order_response",
+                            ok=False,
+                            retryable=True,
+                            error_type=type(exc).__name__,
+                            message=str(exc),
+                            intent=decision.intent,
+                        )
+                        trigger.record_attempt(now_monotonic=now)
+                        continue
                     logger.log("order_response", ok=True, payload=response)
                 else:
                     stdout.write(

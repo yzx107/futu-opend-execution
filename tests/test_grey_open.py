@@ -20,6 +20,7 @@ from futu_opend_execution import (
 )
 from futu_opend_execution.grey_open import run_live
 from futu_opend_execution.grey_open import build_parser
+from futu_opend_execution.execution.broker import BrokerResponseError
 from futu_opend_execution.risk import ExecutionValidationError
 from futu_opend_execution.services.cost_reducer import (
     CostReducerAction,
@@ -224,6 +225,94 @@ class GreyMarketOpenTriggerTests(unittest.TestCase):
 
         self.assertEqual(submitted, 1)
         self.assertEqual(FakeClient.instances[0].trade_context_calls, 0)
+
+    def test_real_run_retries_after_rejected_order_response(self) -> None:
+        class FakeClient:
+            instances = []
+
+            def __init__(self, config) -> None:
+                del config
+                self.supports_push_signals = True
+                self.place_count = 0
+                type(self).instances.append(self)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def subscribe_market(self, symbol: str) -> None:
+                del symbol
+
+            def ensure_trade_context(self, logger) -> None:
+                del logger
+
+            def unlock_trade(self, logger) -> None:
+                del logger
+
+            def wait_for_push_signal(self, symbol: str, *, timeout_seconds, sleep, monotonic):
+                del symbol, timeout_seconds, sleep, monotonic
+                return GreyMarketSignal(
+                    symbol="HK.01234",
+                    dark_status="TRADING",
+                    best_ask="9.90",
+                )
+
+            def read_signal(self, symbol: str):
+                del symbol
+                raise AssertionError("push signal should be used")
+
+            def place_real_limit_buy(self, intent):
+                del intent
+                self.place_count += 1
+                if self.place_count == 1:
+                    raise BrokerResponseError("place_order failed: 暗盘摆盘摆动太大")
+                return [{"order_id": "2", "order_status": "SUBMITTED"}]
+
+        current_time = -0.1
+
+        def fake_monotonic() -> float:
+            nonlocal current_time
+            current_time += 0.1
+            return current_time
+
+        rules = GreyMarketTriggerRules(
+            symbol="01234",
+            quantity=100,
+            max_price="10",
+            max_qty=100,
+            max_notional="1000",
+            max_order_attempts=2,
+            cool_down_ms=0,
+        )
+        stream = io.StringIO()
+        logger = JsonlEventLogger(stream=stream)
+
+        with patch("futu_opend_execution.grey_open.FutuGreyMarketOpenDClient", FakeClient):
+            submitted = run_live(
+                rules=rules,
+                logger=logger,
+                real=True,
+                timeout_seconds=1.0,
+                poll_interval_ms=50,
+                config=RuntimeConfig(
+                    allow_real_trade=True,
+                    futu_trade_password="pw",
+                ),
+                stdout=io.StringIO(),
+                monotonic=fake_monotonic,
+            )
+
+        events = [json.loads(line) for line in stream.getvalue().splitlines()]
+        responses = [event for event in events if event["event"] == "order_response"]
+
+        self.assertEqual(submitted, 1)
+        self.assertEqual(FakeClient.instances[0].place_count, 2)
+        self.assertFalse(responses[0]["ok"])
+        self.assertTrue(responses[0]["retryable"])
+        self.assertIn("摆动太大", responses[0]["message"])
+        self.assertTrue(responses[1]["ok"])
 
 
 class GreyMarketReplayTests(unittest.TestCase):

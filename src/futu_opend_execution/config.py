@@ -112,6 +112,7 @@ class RuntimeConfig:
     allow_real_trade: bool = False
     futu_security_firm: str = "FUTUSECURITIES"
     futu_acc_id: int = 0
+    futu_sim_acc_id: int = 0
     futu_acc_index: int = 0
     futu_trade_password: str | None = None
     futu_sdk_home_override: str | None = None
@@ -142,6 +143,7 @@ class RuntimeConfig:
             ),
             futu_security_firm=source.get("FUTU_SECURITY_FIRM", "FUTUSECURITIES"),
             futu_acc_id=_parse_int(source.get("FUTU_ACC_ID"), default=0),
+            futu_sim_acc_id=_parse_int(source.get("FUTU_SIM_ACC_ID"), default=0),
             futu_acc_index=_parse_int(source.get("FUTU_ACC_INDEX"), default=0),
             futu_trade_password=_empty_to_none(source.get("FUTU_TRADE_PASSWORD")),
             futu_sdk_home_override=_empty_to_none(

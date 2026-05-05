@@ -77,6 +77,7 @@ from futu_opend_execution.strategy_config import (
 STATIC_ROOT = Path(__file__).with_name("web_static")
 DEFAULT_KILL_SWITCH = Path("/tmp/futu-opend-execution.KILL")
 REAL_CONFIRM_TEXT = "确认实盘"
+DEFAULT_GREY_ARM_TIMEOUT_SECONDS = 14400
 REAL_DUPLICATE_WINDOW_SECONDS = 3.0
 
 
@@ -144,6 +145,9 @@ def build_app_handler(state: WebState):
                         symbol=_first_query_value(query, "symbol"),
                     )
                 )
+                return
+            if parsed.path == "/api/accounts":
+                self._handle_json(lambda: api_accounts(state))
                 return
             if parsed.path == "/api/events":
                 query = parse_qs(parsed.query)
@@ -398,6 +402,16 @@ def api_quote(state: WebState, *, symbol: str) -> dict[str, Any]:
     return {"quote": payload}
 
 
+def api_accounts(state: WebState) -> dict[str, Any]:
+    with FutuNormalTradeClient(state.config) as client:
+        accounts = client.list_accounts()
+    return {
+        "configured_acc_id": state.config.futu_acc_id,
+        "configured_acc_index": state.config.futu_acc_index,
+        "accounts": accounts,
+    }
+
+
 def api_state(state: WebState) -> dict[str, Any]:
     return {
         "ui_state": config_to_jsonable(state.ui_state),
@@ -449,7 +463,7 @@ def api_start_live_dry_run(state: WebState, payload: dict[str, Any]) -> dict[str
         raise ExecutionValidationError(f"{rules.symbol} 已在模拟盯盘，请勿重复启动。")
     if state.kill_switch_file.exists():
         raise ExecutionValidationError("Kill switch 已开启；清除后才能开始模拟布防。")
-    timeout_seconds = float(payload.get("timeout_seconds") or 600)
+    timeout_seconds = float(payload.get("timeout_seconds") or DEFAULT_GREY_ARM_TIMEOUT_SECONDS)
     poll_interval_ms = int(payload.get("poll_interval_ms") or 50)
     state.ui_state.execution_mode = ExecutionMode.LIVE_DRY_RUN
     state.ui_state.active_symbol = rules.symbol
@@ -545,7 +559,7 @@ def api_start_live_real_buy_only(state: WebState, payload: dict[str, Any]) -> di
             intent=preflight_intent,
         )
 
-    timeout_seconds = float(payload.get("timeout_seconds") or 600)
+    timeout_seconds = float(payload.get("timeout_seconds") or DEFAULT_GREY_ARM_TIMEOUT_SECONDS)
     poll_interval_ms = int(payload.get("poll_interval_ms") or 50)
     state.ui_state.execution_mode = ExecutionMode.LIVE_REAL_BUY_ONLY
     state.ui_state.active_symbol = rules.symbol
@@ -588,10 +602,21 @@ def api_stop_live_run(state: WebState) -> dict[str, Any]:
 
 
 def api_restart(state: WebState) -> dict[str, Any]:
-    """Clear kill switch only after active live workers have stopped."""
+    """Move the Web UI back to a ready-to-arm state.
+
+    Reset is intentionally two-phase: first signal any live worker to stop by
+    creating the kill switch, then clear the kill switch only after those
+    workers have actually exited.
+    """
     state.ui_state.live_running = False
     state.ui_state.last_error = None
-    if _has_live_threads(state):
+    alive_threads = _alive_live_threads(state)
+    if alive_threads and not state.kill_switch_file.exists():
+        state.kill_switch_file.write_text(
+            f"restart_stop_at={datetime.now(UTC).isoformat()}\n",
+            encoding="utf-8",
+        )
+    if alive_threads:
         if not state.kill_switch_file.exists():
             state.kill_switch_file.write_text(
                 f"restart_blocked_at={datetime.now(UTC).isoformat()}\n",
@@ -599,19 +624,41 @@ def api_restart(state: WebState) -> dict[str, Any]:
             )
         _log_event(
             state,
-            "web_restart_blocked_active_threads",
+            "web_restart_stop_requested",
             kill_switch_file=str(state.kill_switch_file),
+            active_symbols=[symbol for symbol, _thread in alive_threads],
         )
-        raise ExecutionValidationError(
-            "仍有暗盘布防线程未退出；已保持/创建 Kill Switch。请等几秒刷新后再重新启动。"
+        alive_threads = _wait_for_live_threads_to_exit(
+            state,
+            timeout_seconds=2.0,
         )
+    if alive_threads:
+        _log_event(
+            state,
+            "web_restart_waiting_for_threads",
+            kill_switch_file=str(state.kill_switch_file),
+            active_symbols=[symbol for symbol, _thread in alive_threads],
+        )
+        return {
+            "running": True,
+            "ready": False,
+            "kill_switch": True,
+            "message": "旧布防线程仍在退出中；Kill Switch 已保持。请稍等几秒再重置。",
+            "active_symbols": [symbol for symbol, _thread in alive_threads],
+        }
     if state.kill_switch_file.exists():
         state.kill_switch_file.unlink()
     with state._lock:
         state.live_threads.clear()
         state.live_thread = None
-    _log_event(state, "web_restart_requested")
-    return {"running": False, "kill_switch": False}
+        state.ui_state.live_running = False
+    _log_event(state, "web_reset_to_ready")
+    return {
+        "running": False,
+        "ready": True,
+        "kill_switch": False,
+        "message": "已恢复可布防状态。",
+    }
 
 
 def _run_live_real_buy_worker(
@@ -981,9 +1028,12 @@ def api_normal_order(state: WebState, payload: dict[str, Any]) -> dict[str, Any]
     lots = _optional_int(payload.get("lots"))
     shares = _optional_int(payload.get("shares"))
     remark = str(payload.get("remark") or "web_normal_trade")
+    paper = bool(payload.get("paper", False))
 
     if state.kill_switch_file.exists():
         raise ExecutionValidationError("Kill switch 已开启，禁止下单。")
+    if real and paper:
+        raise ExecutionValidationError("real and paper cannot both be true.")
     if real:
         if not state.config.allow_real_trade:
             raise ExecutionValidationError("环境未开启 FUTU_ALLOW_REAL_TRADE=1。")
@@ -1008,23 +1058,36 @@ def api_normal_order(state: WebState, payload: dict[str, Any]) -> dict[str, Any]
             state.check_duplicate_real_order(signature)
 
         request_payload = {
-            "dry_run": not real,
+            "dry_run": not real and not paper,
+            "paper": paper,
             "intent": _intent_to_payload(intent),
             "quote": _quote_to_payload(quote),
         }
         _log_event(state, "web_normal_order_request", **request_payload)
-        if not real:
+        if not real and not paper:
             return {
                 "submitted": False,
                 "dry_run": True,
+                "paper": False,
                 "intent": _intent_to_payload(intent),
                 "quote": _quote_to_payload(quote),
             }
 
-        response = client.place_order(intent)
+        if paper:
+            response = client.place_simulate_order(intent)
+            trd_env = getattr(getattr(client, "_futu", None), "TrdEnv", None)
+            trd_env = getattr(trd_env, "SIMULATE", None)
+        else:
+            response = client.place_order(intent)
+            trd_env = getattr(getattr(client, "_futu", None), "TrdEnv", None)
+            trd_env = getattr(trd_env, "REAL", None)
         order_id = _extract_order_id(response)
         timeline = (
-            client.wait_for_terminal_order(order_id=order_id, symbol=intent.symbol)
+            client.wait_for_terminal_order(
+                order_id=order_id,
+                symbol=intent.symbol,
+                trd_env=trd_env,
+            )
             if order_id
             else []
         )
@@ -1037,6 +1100,7 @@ def api_normal_order(state: WebState, payload: dict[str, Any]) -> dict[str, Any]
         return {
             "submitted": True,
             "dry_run": False,
+            "paper": paper,
             "intent": _intent_to_payload(intent),
             "quote": _quote_to_payload(quote),
             "response": response,
@@ -1132,6 +1196,34 @@ def _has_live_threads(state: WebState) -> bool:
             state.live_threads.pop(symbol, None)
         state.ui_state.live_running = False
         return False
+
+
+def _alive_live_threads(state: WebState) -> list[tuple[str, Thread]]:
+    with state._lock:
+        alive: list[tuple[str, Thread]] = []
+        for symbol, thread in list(state.live_threads.items()):
+            if thread.is_alive():
+                alive.append((symbol, thread))
+            else:
+                state.live_threads.pop(symbol, None)
+        state.ui_state.live_running = bool(alive)
+        return alive
+
+
+def _wait_for_live_threads_to_exit(
+    state: WebState,
+    *,
+    timeout_seconds: float,
+) -> list[tuple[str, Thread]]:
+    deadline = time.monotonic() + max(timeout_seconds, 0.0)
+    for _symbol, thread in _alive_live_threads(state):
+        if thread is current_thread():
+            continue
+        remaining = max(deadline - time.monotonic(), 0.0)
+        if remaining <= 0:
+            break
+        thread.join(timeout=remaining)
+    return _alive_live_threads(state)
 
 
 def _mark_live_thread_finished(state: WebState, symbol: str) -> None:

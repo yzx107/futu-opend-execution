@@ -134,7 +134,10 @@
               <h2 id="greyTitle">暗盘第一时间买入</h2>
               <p id="greyState">先试跑，再模拟布防；实盘只做买入，满足暗盘 TRADING、卖一价不高于最高价、金额/次数风控后才提交限价买单。</p>
             </div>
-            <button class="danger-button small" id="killSwitchBtn" type="button">一键停止</button>
+            <div class="button-pair header-actions">
+              <button class="small-button" id="resetReadyBtn" type="button">一键 Reset</button>
+              <button class="danger-button small" id="killSwitchBtn" type="button">一键停止</button>
+            </div>
           </div>
 
           <form id="greyForm" class="trade-form">
@@ -147,7 +150,7 @@
 
             <label>
               <span>暗盘代码（可多个，逗号/空格/换行分隔）</span>
-              <textarea id="greySymbol" name="symbol" autocomplete="off" required>HK.01879</textarea>
+              <textarea id="greySymbol" name="symbol" autocomplete="off" required>HK.01609</textarea>
             </label>
 
             <div class="grid-2">
@@ -163,7 +166,7 @@
 
             <label>
               <span>最大金额（最高价 × 股数上限）</span>
-              <input id="greyMaxNotional" name="max_notional" type="number" min="0" step="0.01" placeholder="例：12.80 × 1000 = 12800">
+              <input id="greyMaxNotional" name="max_notional" type="number" min="0" step="0.01" placeholder="自动按最高价 × 股数计算，可手动覆盖">
             </label>
 
             <div class="grid-2">
@@ -222,7 +225,7 @@
           </div>
           <div class="trade-form">
             <div class="grid-3">
-              <label><span>标的代码</span><input id="setupSymbol" name="symbol" value="HK.01879"></label>
+              <label><span>标的代码</span><input id="setupSymbol" name="symbol" value="HK.01609"></label>
               <label><span>目标数量（股）</span><input id="setupQuantity" name="quantity" type="number" value="1000"></label>
               <label><span>每手股数</span><input id="setupLotSize" name="lot_size" type="number" value="100"></label>
             </div>
@@ -247,7 +250,7 @@
               <button class="secondary-button" id="dryRunOpenTriggerBtn" type="button">暗盘试跑</button>
               <button class="primary-button" id="startLiveDryRunBtn" type="button">开始实时模拟</button>
               <button class="small-button" id="stopLiveRunBtn" type="button">停止运行</button>
-              <button class="primary-button" id="restartBtn" type="button">重新启动</button>
+              <button class="primary-button" id="restartBtn" type="button">一键 Reset</button>
               <button class="danger-button small" id="createKillSwitchBtn" type="button">创建 kill switch</button>
               <button class="small-button" id="clearKillSwitchBtn" type="button">清除 kill switch</button>
             </div>
