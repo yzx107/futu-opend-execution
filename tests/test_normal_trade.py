@@ -57,45 +57,45 @@ class FakeNormalTradeClient:
 
 class NormalTradeTests(unittest.TestCase):
     def test_simulate_account_can_be_configured_from_env(self) -> None:
-        config = RuntimeConfig.from_env({"FUTU_SIM_ACC_ID": "15091974"})
+        config = RuntimeConfig.from_env({"FUTU_SIM_ACC_ID": "92000002"})
 
-        self.assertEqual(config.futu_sim_acc_id, 15091974)
+        self.assertEqual(config.futu_sim_acc_id, 92000002)
 
     def test_resolve_simulate_account_uses_configured_sim_acc_id(self) -> None:
         client = FutuNormalTradeClient.__new__(FutuNormalTradeClient)
-        client._config = RuntimeConfig(futu_acc_id=1, futu_sim_acc_id=15091974)
+        client._config = RuntimeConfig(futu_acc_id=1, futu_sim_acc_id=92000002)
 
-        self.assertEqual(client._resolve_acc_id("SIMULATE"), 15091974)
+        self.assertEqual(client._resolve_acc_id("SIMULATE"), 92000002)
         self.assertEqual(client._resolve_acc_id("REAL"), 1)
 
     def test_resolve_simulate_account_selects_hk_stock_sim_account(self) -> None:
         client = FutuNormalTradeClient.__new__(FutuNormalTradeClient)
-        client._config = RuntimeConfig(futu_acc_id=281756479117805085)
+        client._config = RuntimeConfig(futu_acc_id=9100000000000001)
         client.list_accounts = lambda: [
             {
-                "acc_id": 281756479117805085,
+                "acc_id": 9100000000000001,
                 "trd_env": "REAL",
                 "trdmarket_auth": ["HK"],
             },
             {
-                "acc_id": 15091977,
+                "acc_id": 92000003,
                 "trd_env": "SIMULATE",
                 "sim_acc_type": "OPTION",
                 "trdmarket_auth": ["HK"],
             },
             {
-                "acc_id": 15091974,
+                "acc_id": 92000002,
                 "trd_env": "SIMULATE",
                 "sim_acc_type": "STOCK",
                 "trdmarket_auth": ["HK"],
             },
         ]
 
-        self.assertEqual(client._resolve_acc_id("SIMULATE"), 15091974)
+        self.assertEqual(client._resolve_acc_id("SIMULATE"), 92000002)
 
     def test_resolve_simulate_account_fails_closed_without_stock_account(self) -> None:
         client = FutuNormalTradeClient.__new__(FutuNormalTradeClient)
-        client._config = RuntimeConfig(futu_acc_id=281756479117805085)
+        client._config = RuntimeConfig(futu_acc_id=9100000000000001)
         client.list_accounts = lambda: [{"acc_id": 1, "trd_env": "REAL"}]
 
         with self.assertRaises(BrokerConfigurationError):
