@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
@@ -19,12 +20,15 @@ class CostReducerAction(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class CostReducerRules:
+    lot_size: int = 1
     core_ratio: Decimal = Decimal("0.5")
     trading_ratio: Decimal = Decimal("0.5")
     overextension_vol_multiple: Decimal = Decimal("2.0")
     high_pullback_vol_multiple: Decimal = Decimal("0.5")
     rebuy_anchor_vol_band: Decimal = Decimal("1.0")
     max_sell_total_position_ratio: Decimal = Decimal("0.25")
+    max_sell_qty_per_order: int | None = None
+    max_rebuy_qty_per_order: int | None = None
     max_round_trips: int = 1
     min_turnover_to_activate: Decimal = Decimal("0")
     min_ticks_to_activate: int = 5
@@ -47,9 +51,14 @@ class CostReducerDecision:
 
 
 class CostReducerExecutableStatus(str, Enum):
+    NOT_EXECUTABLE = "NOT_EXECUTABLE"
+    DRY_RUN_SIGNAL = "DRY_RUN_SIGNAL"
+    RISK_BLOCKED = "RISK_BLOCKED"
     PENDING_APPROVAL = "PENDING_APPROVAL"
-    EXECUTED = "EXECUTED"
-    BLOCKED = "BLOCKED"
+    SUBMITTED = "SUBMITTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELLED = "CANCELLED"
     EXPIRED = "EXPIRED"
 
 
@@ -92,6 +101,8 @@ class CostReducerExecutableIntent:
     safety_buffer_bps: Decimal
     market_snapshot: dict
     inventory_snapshot: dict
+    client_intent_id: str
+    signal_id: str
     approved: bool = False
     status: CostReducerExecutableStatus = CostReducerExecutableStatus.PENDING_APPROVAL
 
@@ -171,7 +182,12 @@ class CostReducerEngine:
         if remaining_sell_capacity <= 0:
             return CostReducerDecision(CostReducerAction.BLOCK, reason="max cumulative sell ratio reached")
 
-        quantity = min(inventory.trading_available_to_sell, remaining_sell_capacity)
+        quantity = min(
+            inventory.trading_available_to_sell,
+            remaining_sell_capacity,
+            self._rules.max_sell_qty_per_order or inventory.trading_available_to_sell,
+        )
+        quantity = _align_down(quantity, self._rules.lot_size)
         if quantity <= 0:
             return CostReducerDecision(CostReducerAction.BLOCK, reason="sell quantity blocked by ratio")
 
@@ -205,9 +221,16 @@ class CostReducerEngine:
         if not near_anchor:
             return None
 
+        quantity = min(
+            inventory.trading_available_to_rebuy,
+            self._rules.max_rebuy_qty_per_order or inventory.trading_available_to_rebuy,
+        )
+        quantity = _align_down(quantity, self._rules.lot_size)
+        if quantity <= 0:
+            return CostReducerDecision(CostReducerAction.BLOCK, reason="rebuy quantity blocked by lot/order cap")
         return CostReducerDecision(
             CostReducerAction.REBUY_TRADING,
-            quantity=inventory.trading_available_to_rebuy,
+            quantity=quantity,
             reason="rebuy conditions met",
         )
 
@@ -251,16 +274,19 @@ def build_executable_intent(
     best_ask: Decimal | str | int | float | None,
     last_sell_price: Decimal | str | int | float | None = None,
 ) -> CostReducerExecutableIntent:
-    if decision.action not in {
-        CostReducerAction.SELL_TRADING,
-        CostReducerAction.REBUY_TRADING,
-    }:
+    if decision.action not in {CostReducerAction.SELL_TRADING, CostReducerAction.REBUY_TRADING}:
+        status = (
+            CostReducerExecutableStatus.RISK_BLOCKED
+            if decision.action is CostReducerAction.BLOCK
+            else CostReducerExecutableStatus.NOT_EXECUTABLE
+        )
         return _blocked_intent(
             decision=decision,
             market=market,
             inventory=inventory,
             rules=rules,
             reason=decision.reason or "not executable",
+            status=status,
         )
     if market.spread_bps > rules.max_spread_bps:
         return _blocked_intent(
@@ -269,6 +295,7 @@ def build_executable_intent(
             inventory=inventory,
             rules=rules,
             reason="spread too wide",
+            status=CostReducerExecutableStatus.RISK_BLOCKED,
         )
 
     if decision.action is CostReducerAction.SELL_TRADING:
@@ -280,6 +307,7 @@ def build_executable_intent(
                 inventory=inventory,
                 rules=rules,
                 reason="best_bid unavailable",
+                status=CostReducerExecutableStatus.RISK_BLOCKED,
             )
         limit_price = bid - Decimal(policy.sell_limit_offset_ticks) * policy.tick_size
         if policy.min_sell_price is not None:
@@ -311,6 +339,7 @@ def build_executable_intent(
             inventory=inventory,
             rules=rules,
             reason="best_ask unavailable",
+            status=CostReducerExecutableStatus.RISK_BLOCKED,
         )
     sell_anchor = _to_decimal_optional(last_sell_price)
     if sell_anchor is None or sell_anchor <= 0:
@@ -320,6 +349,7 @@ def build_executable_intent(
             inventory=inventory,
             rules=rules,
             reason="last_sell_price unavailable",
+            status=CostReducerExecutableStatus.RISK_BLOCKED,
         )
     limit_price = ask + Decimal(policy.rebuy_limit_offset_ticks) * policy.tick_size
     caps = [cap for cap in (policy.max_rebuy_price, policy.original_max_price) if cap is not None and cap > 0]
@@ -361,7 +391,7 @@ def _executable_intent(
     reason = decision.reason
     status = CostReducerExecutableStatus.PENDING_APPROVAL
     if policy.dry_run_only:
-        status = CostReducerExecutableStatus.BLOCKED
+        status = CostReducerExecutableStatus.DRY_RUN_SIGNAL
         reason = f"{reason}; dry_run_only"
     if policy.require_positive_expected_edge and expected_edge_bps < policy.min_expected_edge_bps:
         return _blocked_intent(
@@ -370,7 +400,9 @@ def _executable_intent(
             inventory=inventory,
             rules=rules,
             reason=f"{reason}; expected edge below threshold",
+            status=CostReducerExecutableStatus.NOT_EXECUTABLE,
         )
+    signal_id = _signal_id(decision, market, limit_price, status)
     return CostReducerExecutableIntent(
         action=decision.action,
         side=side,
@@ -384,6 +416,8 @@ def _executable_intent(
         safety_buffer_bps=rules.safety_buffer_bps,
         market_snapshot=_market_snapshot(market),
         inventory_snapshot=_inventory_snapshot(inventory),
+        client_intent_id=signal_id,
+        signal_id=signal_id,
         approved=False,
         status=status,
     )
@@ -396,7 +430,9 @@ def _blocked_intent(
     inventory: InventoryState,
     rules: CostReducerRules,
     reason: str,
+    status: CostReducerExecutableStatus = CostReducerExecutableStatus.NOT_EXECUTABLE,
 ) -> CostReducerExecutableIntent:
+    signal_id = _signal_id(decision, market, None, status)
     return CostReducerExecutableIntent(
         action=decision.action,
         side=None,
@@ -410,7 +446,9 @@ def _blocked_intent(
         safety_buffer_bps=rules.safety_buffer_bps,
         market_snapshot=_market_snapshot(market),
         inventory_snapshot=_inventory_snapshot(inventory),
-        status=CostReducerExecutableStatus.BLOCKED,
+        client_intent_id=signal_id,
+        signal_id=signal_id,
+        status=status,
     )
 
 
@@ -452,3 +490,25 @@ def _bps(numerator: Decimal, denominator: Decimal) -> Decimal:
     if denominator <= 0:
         return Decimal("0")
     return (numerator / denominator) * Decimal("10000")
+
+
+def _align_down(quantity: int, lot_size: int) -> int:
+    lot = max(int(lot_size), 1)
+    return (int(quantity) // lot) * lot
+
+
+def _signal_id(
+    decision: CostReducerDecision,
+    market: AdaptiveMarketState,
+    limit_price: Decimal | None,
+    status: CostReducerExecutableStatus,
+) -> str:
+    parts = (
+        decision.action.value,
+        str(decision.quantity),
+        str(market.last_price),
+        str(limit_price),
+        str(market.tick_count),
+        status.value,
+    )
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:20]

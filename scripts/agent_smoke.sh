@@ -16,6 +16,10 @@ rm -f \
   "${ROOT}/reports/agent/smoke_paper_summary.json"
 
 "${PY}" -m futu_opend_execution.cli.main positions --offline
+"${PY}" -m futu_opend_execution.cli.main watchlist validate \
+  --config "${ROOT}/configs/watchlist.example.json"
+"${PY}" -m futu_opend_execution.cli.main watchlist show \
+  --config "${ROOT}/configs/watchlist.example.json" >/dev/null
 "${PY}" -m futu_opend_execution.cli.main replay HK.00700 \
   --current-qty 200 \
   --cost-price 100 \

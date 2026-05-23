@@ -1,0 +1,33 @@
+{
+  "symbols": [
+    {
+      "symbol": "HK.00700",
+      "enabled": true,
+      "lot_size": 100,
+      "current_qty": 2000,
+      "cost_price": "300.0",
+      "core_qty_target": 1400,
+      "trading_qty_target": 600,
+      "max_sell_qty_per_order": 100,
+      "max_rebuy_qty_per_order": 100,
+      "max_sell_total_position_ratio": "0.25",
+      "max_round_trips": 2,
+      "black_swan_thresholds": {
+        "intraday_drop_bps": "500",
+        "gap_down_bps": "800",
+        "spread_bps": "50",
+        "stale_seconds": "3",
+        "min_bid_size_lots": 3
+      },
+      "cost_reducer_rules": {
+        "overextension_vol_multiple": "2.0",
+        "high_pullback_vol_multiple": "0.5",
+        "rebuy_anchor_vol_band": "1.0",
+        "max_spread_bps": "20",
+        "estimated_roundtrip_cost_bps": "35",
+        "safety_buffer_bps": "20"
+      },
+      "notes": "example only"
+    }
+  ]
+}

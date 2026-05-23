@@ -10,5 +10,7 @@ setup(
     python_requires=">=3.10",
     extras_require={
         "futu": ["futu-api"],
+        "replay": ["polars"],
+        "dev": ["pytest"],
     },
 )

@@ -8,6 +8,8 @@ from decimal import Decimal
 from futu_opend_execution.data.market import MarketState
 from futu_opend_execution.inventory import InventoryState
 from futu_opend_execution.services.cost_reducer import (
+    CostReducerAction,
+    CostReducerDecision,
     CostReducerEngine,
     CostReducerExecutableIntent,
     CostReducerExecutionPolicy,
@@ -33,6 +35,17 @@ class CostReducerStrategy:
         state: CostReducerState,
     ) -> CostReducerExecutableIntent:
         adaptive = _to_adaptive_state(market)
+        if getattr(market, "stale", False):
+            return build_executable_intent(
+                decision=CostReducerDecision(CostReducerAction.BLOCK, reason="market data stale"),
+                market=adaptive,
+                inventory=inventory,
+                rules=self.rules,
+                policy=self.policy,
+                best_bid=market.best_bid,
+                best_ask=market.best_ask,
+                last_sell_price=state.last_sell_price,
+            )
         decision = CostReducerEngine(self.rules).evaluate(
             inventory=inventory,
             market=adaptive,
