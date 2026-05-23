@@ -42,12 +42,16 @@ class AgentRuntimeTests(unittest.TestCase):
             "--overextension-grid",
             "1.5,2.0",
         ])
+        universe = parser.parse_args(["newly-listed-universe", "--listing-year", "2026", "--date", "2026-05-22"])
+        optimize_new = parser.parse_args(["optimize-newly-listed", "--listing-year", "2026", "--max-symbols", "1"])
 
         self.assertEqual(replay.command, "replay")
         self.assertEqual(replay.top_of_book_root, "/tmp/top")
         self.assertEqual(monitor.command, "monitor")
         self.assertEqual(watchlist.command, "watchlist")
         self.assertEqual(optimize.command, "optimize-cost-reducer")
+        self.assertEqual(universe.command, "newly-listed-universe")
+        self.assertEqual(optimize_new.command, "optimize-newly-listed")
 
     def test_replay_emits_summary_and_paper_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

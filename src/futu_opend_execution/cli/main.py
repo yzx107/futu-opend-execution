@@ -15,6 +15,11 @@ from futu_opend_execution.agent.approval import (
     draft_approval_from_strategy_signal,
     load_approval_file,
 )
+from futu_opend_execution.agent.newly_listed import (
+    build_newly_listed_universe,
+    optimize_newly_listed,
+    write_newly_listed_reports,
+)
 from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_reducer, write_optimizer_reports
 from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
@@ -68,6 +73,40 @@ def build_parser() -> argparse.ArgumentParser:
     optimize.add_argument("--safety-buffer-grid", default=None)
     optimize.add_argument("--max-sell-ratio-grid", default=None)
     optimize.add_argument("--max-round-trips-grid", default=None)
+
+    universe = sub.add_parser("newly-listed-universe", help="Build a 2026 newly listed HK stock research universe")
+    universe.add_argument("--listing-year", type=int, default=2026)
+    universe.add_argument("--as-of", default=None)
+    universe.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    universe.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    universe.add_argument("--top-of-book-root", default=None)
+    universe.add_argument("--date", action="append", dest="dates")
+    universe.add_argument("--min-trade-dates", type=int, default=1)
+    universe.add_argument("--max-symbols", type=int, default=None)
+    universe.add_argument("--include-non-stock-candidates", action="store_true")
+    universe.add_argument("--output-json", default="reports/agent/newly_listed_universe.json")
+    universe.add_argument("--output-md", default="reports/agent/newly_listed_universe.md")
+
+    optimize_new = sub.add_parser("optimize-newly-listed", help="Batch optimize cost reducer parameters for newly listed HK candidates")
+    optimize_new.add_argument("--listing-year", type=int, default=2026)
+    optimize_new.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    optimize_new.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    optimize_new.add_argument("--top-of-book-root", default=None)
+    optimize_new.add_argument("--date", action="append", dest="dates")
+    optimize_new.add_argument("--min-trade-dates", type=int, default=1)
+    optimize_new.add_argument("--max-symbols", type=int, default=20)
+    optimize_new.add_argument("--max-dates-per-symbol", type=int, default=3)
+    optimize_new.add_argument("--lot-size", type=int, default=1)
+    optimize_new.add_argument("--current-qty", type=int, default=2)
+    optimize_new.add_argument("--top-n", type=int, default=20)
+    optimize_new.add_argument("--report-json", default="reports/agent/newly_listed_optimizer_summary.json")
+    optimize_new.add_argument("--report-md", default="reports/agent/newly_listed_optimizer_rank.md")
+    optimize_new.add_argument("--overextension-grid", default=None)
+    optimize_new.add_argument("--pullback-grid", default=None)
+    optimize_new.add_argument("--rebuy-anchor-grid", default=None)
+    optimize_new.add_argument("--safety-buffer-grid", default=None)
+    optimize_new.add_argument("--max-sell-ratio-grid", default=None)
+    optimize_new.add_argument("--max-round-trips-grid", default=None)
 
     paper = sub.add_parser("paper", help="Build paper ledger/report from replay JSONL")
     paper.add_argument("replay_log")
@@ -134,6 +173,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_replay(args)
     if args.command == "optimize-cost-reducer":
         return _cmd_optimize_cost_reducer(args)
+    if args.command == "newly-listed-universe":
+        return _cmd_newly_listed_universe(args)
+    if args.command == "optimize-newly-listed":
+        return _cmd_optimize_newly_listed(args)
     if args.command == "paper":
         print(json.dumps(run_paper(replay_log_path=args.replay_log, ledger_path=args.ledger_path, report_path=args.report_path), ensure_ascii=False))
         return 0
@@ -189,6 +232,53 @@ def _cmd_optimize_cost_reducer(args) -> int:
     )
     write_optimizer_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
     print(json.dumps({key: summary[key] for key in ("event", "symbol", "market_state_count", "grid_size", "top_n")}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_newly_listed_universe(args) -> int:
+    as_of = datetime.fromisoformat(args.as_of).date() if args.as_of else None
+    summary = build_newly_listed_universe(
+        instrument_profile_path=args.instrument_profile,
+        data_root=args.data_root,
+        top_of_book_root=args.top_of_book_root,
+        listing_year=args.listing_year,
+        as_of=as_of,
+        dates=args.dates,
+        min_trade_dates=args.min_trade_dates,
+        stock_research_candidate_only=not args.include_non_stock_candidates,
+        max_symbols=args.max_symbols,
+    )
+    write_newly_listed_reports(summary, json_path=args.output_json, markdown_path=args.output_md)
+    print(json.dumps({key: summary[key] for key in ("event", "listing_year", "candidate_count")}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_optimize_newly_listed(args) -> int:
+    default_grid = CostReducerGrid()
+    grid = CostReducerGrid(
+        overextension_vol_multiple=_decimal_tuple(args.overextension_grid, default_grid.overextension_vol_multiple),
+        high_pullback_vol_multiple=_decimal_tuple(args.pullback_grid, default_grid.high_pullback_vol_multiple),
+        rebuy_anchor_vol_band=_decimal_tuple(args.rebuy_anchor_grid, default_grid.rebuy_anchor_vol_band),
+        safety_buffer_bps=_decimal_tuple(args.safety_buffer_grid, default_grid.safety_buffer_bps),
+        max_sell_total_position_ratio=_decimal_tuple(args.max_sell_ratio_grid, default_grid.max_sell_total_position_ratio),
+        max_round_trips=_int_tuple(args.max_round_trips_grid, default_grid.max_round_trips),
+    )
+    summary = optimize_newly_listed(
+        instrument_profile_path=args.instrument_profile,
+        data_root=args.data_root,
+        top_of_book_root=args.top_of_book_root,
+        listing_year=args.listing_year,
+        dates=args.dates,
+        min_trade_dates=args.min_trade_dates,
+        max_symbols=args.max_symbols,
+        max_dates_per_symbol=args.max_dates_per_symbol,
+        lot_size=args.lot_size,
+        current_qty=args.current_qty,
+        grid=grid,
+        top_n=args.top_n,
+    )
+    write_newly_listed_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
+    print(json.dumps({key: summary[key] for key in ("event", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")}, ensure_ascii=False))
     return 0
 
 

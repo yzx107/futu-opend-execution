@@ -121,13 +121,16 @@ def _evaluate_combo(
 
     cost_basis_reduction = initial_cost_basis - inventory.economic_cost_basis
     open_quantity = sum(quantity for quantity, _ in open_sells)
+    open_quantity_penalty = Decimal(open_quantity) * Decimal("0.01")
     return {
         "params": _jsonable_params(overrides),
         "sell_count": sell_count,
         "rebuy_count": rebuy_count,
         "round_trips_completed": state.round_trips_completed,
         "open_quantity": open_quantity,
+        "open_quantity_penalty": str(open_quantity_penalty),
         "realized_net_pnl": str(realized_net_pnl),
+        "net_pnl_after_cost": str(realized_net_pnl),
         "initial_cost_basis": str(initial_cost_basis),
         "final_economic_cost_basis": str(inventory.economic_cost_basis),
         "cost_basis_reduction": str(cost_basis_reduction),

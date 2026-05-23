@@ -35,6 +35,8 @@ class CostReducerOptimizerTests(unittest.TestCase):
         self.assertEqual(summary["grid_size"], 2)
         self.assertEqual(len(summary["results"]), 2)
         self.assertGreaterEqual(int(summary["results"][0]["sell_count"]), 0)
+        self.assertIn("net_pnl_after_cost", summary["results"][0])
+        self.assertIn("open_quantity_penalty", summary["results"][0])
 
         with tempfile.TemporaryDirectory() as temp_dir:
             json_path = Path(temp_dir) / "summary.json"

@@ -81,6 +81,36 @@ The optimizer uses the same fail-closed cost reducer gates as replay. If top-of-
 
 Read optimizer rankings defensively: rows with `open_quantity > 0` are unfinished sell legs, not completed high-sell/low-rebuy round trips. Prefer candidates with positive `realized_net_pnl`, completed `round_trips_completed`, low `open_quantity`, and low `quality_block_count`.
 
+Build the 2026 newly listed HK research universe from the local Hshare sidecar profile and tick coverage:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main newly-listed-universe \
+  --listing-year 2026 \
+  --data-root /Volumes/Data/港股Tick数据/candidate_cleaned \
+  --output-json reports/agent/newly_listed_universe_2026.json \
+  --output-md reports/agent/newly_listed_universe_2026.md
+```
+
+Run a bounded newly listed cost-reducer optimization:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main optimize-newly-listed \
+  --listing-year 2026 \
+  --data-root /Volumes/Data/港股Tick数据/candidate_cleaned \
+  --date 2026-05-22 \
+  --max-symbols 3 \
+  --max-dates-per-symbol 1 \
+  --overextension-grid 1.5,2.0 \
+  --pullback-grid 0.3 \
+  --rebuy-anchor-grid 1.0 \
+  --safety-buffer-grid 20 \
+  --max-sell-ratio-grid 0.5 \
+  --report-json reports/agent/newly_listed_optimizer_smoke.json \
+  --report-md reports/agent/newly_listed_optimizer_smoke.md
+```
+
+The newly listed optimizer is research/paper only. It reports `net_pnl_after_cost`, `cost_basis_reduction`, completed round trips, open-quantity penalty, and quality/risk block counts. If raw Hshare rows do not provide strategy-grade bid/ask depth, the strategy stays blocked and the ranking is not a tradable parameter recommendation.
+
 Run live dry-run monitor from watchlist:
 
 ```bash

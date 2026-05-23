@@ -57,7 +57,7 @@ class CostReducerStrategy:
                 best_ask=market.best_ask,
                 last_sell_price=state.last_sell_price,
             )
-        if getattr(market, "book_depth_limited", False):
+        if getattr(market, "orderbook_limited", False) or getattr(market, "book_depth_limited", False):
             return build_executable_intent(
                 decision=CostReducerDecision(CostReducerAction.BLOCK, reason="book depth unavailable"),
                 market=adaptive,

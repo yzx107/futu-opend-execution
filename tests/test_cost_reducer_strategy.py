@@ -98,6 +98,20 @@ class CostReducerStrategyTests(unittest.TestCase):
         self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
         self.assertEqual(intent.reason, "book depth unavailable")
 
+    def test_missing_orderbook_is_risk_blocked(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
+        inventory = build_inventory_for_existing_position(config)
+        market = self._sell_state()
+        object.__setattr__(market, "best_bid", None)
+        object.__setattr__(market, "best_ask", None)
+        object.__setattr__(market, "orderbook_limited", True)
+
+        intent = default_strategy(config).evaluate(market=market, inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.action, CostReducerAction.BLOCK)
+        self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
+        self.assertEqual(intent.reason, "book depth unavailable")
+
     def test_blocked_book_quality_is_risk_blocked(self) -> None:
         config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
         inventory = build_inventory_for_existing_position(config)
