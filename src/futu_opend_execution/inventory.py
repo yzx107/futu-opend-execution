@@ -1,4 +1,4 @@
-"""Inventory accounting for grey-market cost-reducer dry-run workflows."""
+"""Inventory accounting for trading-agent cost reducer workflows."""
 
 from __future__ import annotations
 

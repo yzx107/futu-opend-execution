@@ -20,7 +20,7 @@ class MarketDataTimeoutError(MarketDataError):
 
 
 class MarketDataClient(Protocol):
-    """Minimal market-data interface required by the grey-market harness."""
+    """Minimal market-data interface for read-only OpenD quote adapters."""
 
     def get_market_state(self, *, symbol: str) -> str:
         """Return the current market state string for the symbol."""

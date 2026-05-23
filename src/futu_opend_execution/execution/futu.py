@@ -48,6 +48,47 @@ class FutuOpenDTradeBroker:
         time_in_force: TimeInForce,
         remark: str | None = None,
     ) -> BrokerOrderSnapshot:
+        return self._place_limit_order(
+            symbol=symbol,
+            quantity=quantity,
+            limit_price=limit_price,
+            side=self._futu.TrdSide.BUY,
+            trade_mode=trade_mode,
+            time_in_force=time_in_force,
+            remark=remark,
+        )
+
+    def place_limit_sell(
+        self,
+        *,
+        symbol: str,
+        quantity: int,
+        limit_price: Decimal,
+        trade_mode: TradeMode,
+        time_in_force: TimeInForce,
+        remark: str | None = None,
+    ) -> BrokerOrderSnapshot:
+        return self._place_limit_order(
+            symbol=symbol,
+            quantity=quantity,
+            limit_price=limit_price,
+            side=self._futu.TrdSide.SELL,
+            trade_mode=trade_mode,
+            time_in_force=time_in_force,
+            remark=remark,
+        )
+
+    def _place_limit_order(
+        self,
+        *,
+        symbol: str,
+        quantity: int,
+        limit_price: Decimal,
+        side,
+        trade_mode: TradeMode,
+        time_in_force: TimeInForce,
+        remark: str | None,
+    ) -> BrokerOrderSnapshot:
         if trade_mode is TradeMode.REAL:
             self._ensure_trade_unlocked()
 
@@ -55,7 +96,7 @@ class FutuOpenDTradeBroker:
             price=float(limit_price),
             qty=float(quantity),
             code=self._normalize_symbol(symbol),
-            trd_side=self._futu.TrdSide.BUY,
+            trd_side=side,
             order_type=self._futu.OrderType.NORMAL,
             trd_env=self._resolve_trade_env(trade_mode),
             acc_id=self._config.futu_acc_id,

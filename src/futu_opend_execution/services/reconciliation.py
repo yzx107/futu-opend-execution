@@ -1,4 +1,4 @@
-"""Fill-ledger and inventory reconciliation helpers for real grey-market orders."""
+"""Fill-ledger and inventory reconciliation helpers for real trading-agent orders."""
 
 from __future__ import annotations
 
@@ -7,11 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from futu_opend_execution.inventory import InventoryState, InventoryValidationError
-from futu_opend_execution.services.real_order import (
-    GreyMarketRealOrderIntent,
-    GreyOrderRole,
-    GreyOrderSide,
-)
+from futu_opend_execution.execution.orders import OrderRole, OrderSide, RealOrderIntent
 
 
 def _to_decimal(value: Decimal | str | int | float) -> Decimal:
@@ -23,16 +19,16 @@ def _to_decimal(value: Decimal | str | int | float) -> Decimal:
 @dataclass(frozen=True, slots=True)
 class FillRecord:
     order_id: str
-    side: GreyOrderSide | str
-    role: GreyOrderRole | str
+    side: OrderSide | str
+    role: OrderRole | str
     quantity: int
     price: Decimal | str | int | float
     deal_id: str | None = None
     updated_time: str | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "side", self.side if isinstance(self.side, GreyOrderSide) else GreyOrderSide(str(self.side).upper()))
-        object.__setattr__(self, "role", self.role if isinstance(self.role, GreyOrderRole) else GreyOrderRole(str(self.role).upper()))
+        object.__setattr__(self, "side", self.side if isinstance(self.side, OrderSide) else OrderSide(str(self.side).upper()))
+        object.__setattr__(self, "role", self.role if isinstance(self.role, OrderRole) else OrderRole(str(self.role).upper()))
         object.__setattr__(self, "price", _to_decimal(self.price))
         if self.quantity <= 0:
             raise InventoryValidationError("fill quantity must be positive.")
@@ -72,10 +68,10 @@ class FillLedger:
 class InventoryManager:
     inventory: InventoryState
     ledger: FillLedger = field(default_factory=FillLedger)
-    intended_orders: dict[str, GreyMarketRealOrderIntent] = field(default_factory=dict)
+    intended_orders: dict[str, RealOrderIntent] = field(default_factory=dict)
     cancelled_orders: set[str] = field(default_factory=set)
 
-    def record_intent(self, intent: GreyMarketRealOrderIntent) -> dict[str, Any]:
+    def record_intent(self, intent: RealOrderIntent) -> dict[str, Any]:
         self.intended_orders[intent.client_intent_id] = intent
         return {"event": "real_order_intent", "client_intent_id": intent.client_intent_id}
 
@@ -97,15 +93,15 @@ class InventoryManager:
                 "deal_id": fill.deal_id,
             }
 
-        if fill.role is GreyOrderRole.CORE_BUY:
+        if fill.role is OrderRole.CORE_BUY:
             self.inventory.core_qty_filled += fill.quantity
             self.inventory.total_buy_notional += fill.price * Decimal(fill.quantity)
-        elif fill.role is GreyOrderRole.TRADING_BUY:
+        elif fill.role is OrderRole.TRADING_BUY:
             self.inventory.trading_qty_filled += fill.quantity
             self.inventory.total_buy_notional += fill.price * Decimal(fill.quantity)
-        elif fill.role is GreyOrderRole.TRADING_SELL:
+        elif fill.role is OrderRole.TRADING_SELL:
             self.inventory.record_trading_sell(quantity=fill.quantity, price=fill.price)
-        elif fill.role is GreyOrderRole.TRADING_REBUY:
+        elif fill.role is OrderRole.TRADING_REBUY:
             self.inventory.record_trading_rebuy(quantity=fill.quantity, price=fill.price)
         return {
             "event": "real_fill_applied",

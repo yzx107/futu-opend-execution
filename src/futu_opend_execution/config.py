@@ -122,7 +122,7 @@ class RuntimeConfig:
     quote_poll_interval_seconds: float = 0.5
     default_wait_for_open_timeout_seconds: float = 300.0
     default_order_book_depth: int = 10
-    grey_market_open_states: tuple[str, ...] = (
+    hk_market_open_states: tuple[str, ...] = (
         "AUCTION",
         "MORNING",
         "AFTERNOON",
@@ -173,8 +173,8 @@ class RuntimeConfig:
                 source.get("FUTU_DEFAULT_ORDER_BOOK_DEPTH"),
                 default=10,
             ),
-            grey_market_open_states=_parse_csv_tuple(
-                source.get("FUTU_GREY_MARKET_OPEN_STATES"),
+            hk_market_open_states=_parse_csv_tuple(
+                source.get("FUTU_HK_MARKET_OPEN_STATES"),
                 default=(
                     "AUCTION",
                     "MORNING",

@@ -1,4 +1,4 @@
-"""Dry-run/replay-only grey-market cost reducer decision engine."""
+"""Dry-run-first cost reducer decision engine for existing HK positions."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from decimal import Decimal
 from enum import Enum
 
 from futu_opend_execution.inventory import InventoryState
-from futu_opend_execution.services.real_order import GreyOrderRole, GreyOrderSide
+from futu_opend_execution.execution.orders import OrderRole, OrderSide
 from futu_opend_execution.signals.intraday_adaptive import AdaptiveMarketState
 
 class CostReducerAction(str, Enum):
@@ -81,8 +81,8 @@ class CostReducerExecutionPolicy:
 @dataclass(frozen=True, slots=True)
 class CostReducerExecutableIntent:
     action: CostReducerAction
-    side: GreyOrderSide | None
-    role: GreyOrderRole | None
+    side: OrderSide | None
+    role: OrderRole | None
     quantity: int
     reference_price: Decimal | None
     limit_price: Decimal | None
@@ -296,8 +296,8 @@ def build_executable_intent(
             inventory=inventory,
             rules=rules,
             policy=policy,
-            side=GreyOrderSide.SELL,
-            role=GreyOrderRole.TRADING_SELL,
+            side=OrderSide.SELL,
+            role=OrderRole.TRADING_SELL,
             reference_price=bid,
             limit_price=limit_price,
             expected_edge_bps=expected_edge,
@@ -337,8 +337,8 @@ def build_executable_intent(
         inventory=inventory,
         rules=rules,
         policy=policy,
-        side=GreyOrderSide.BUY,
-        role=GreyOrderRole.TRADING_REBUY,
+        side=OrderSide.BUY,
+        role=OrderRole.TRADING_REBUY,
         reference_price=ask,
         limit_price=limit_price,
         expected_edge_bps=expected_edge,
@@ -352,8 +352,8 @@ def _executable_intent(
     inventory: InventoryState,
     rules: CostReducerRules,
     policy: CostReducerExecutionPolicy,
-    side: GreyOrderSide,
-    role: GreyOrderRole,
+    side: OrderSide,
+    role: OrderRole,
     reference_price: Decimal,
     limit_price: Decimal,
     expected_edge_bps: Decimal,
@@ -364,8 +364,13 @@ def _executable_intent(
         status = CostReducerExecutableStatus.BLOCKED
         reason = f"{reason}; dry_run_only"
     if policy.require_positive_expected_edge and expected_edge_bps < policy.min_expected_edge_bps:
-        status = CostReducerExecutableStatus.BLOCKED
-        reason = f"{reason}; expected edge below threshold"
+        return _blocked_intent(
+            decision=decision,
+            market=market,
+            inventory=inventory,
+            rules=rules,
+            reason=f"{reason}; expected edge below threshold",
+        )
     return CostReducerExecutableIntent(
         action=decision.action,
         side=side,

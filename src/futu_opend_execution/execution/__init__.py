@@ -16,6 +16,8 @@ from futu_opend_execution.execution.market_data import (
     MarketDataResponseError,
     MarketDataTimeoutError,
 )
+from futu_opend_execution.execution.orders import OrderRole, OrderSide, OrderSource, RealOrderIntent
+from futu_opend_execution.execution.positions import OpenDPositionProvider, PositionSnapshot
 
 __all__ = [
     "BrokerConfigurationError",
@@ -29,5 +31,11 @@ __all__ = [
     "MarketDataError",
     "MarketDataResponseError",
     "MarketDataTimeoutError",
+    "OpenDPositionProvider",
+    "OrderRole",
+    "OrderSide",
+    "OrderSource",
+    "PositionSnapshot",
+    "RealOrderIntent",
     "TradeBroker",
 ]

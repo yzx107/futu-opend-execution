@@ -68,7 +68,7 @@ class FutuOpenDQuoteClient:
             symbol=self._strip_market_prefix(broker_symbol),
             asks=asks,
             bids=bids,
-            session=MarketSession.GREY,
+            session=MarketSession.HK,
         )
 
     def close(self) -> None:

@@ -45,6 +45,18 @@ class TradeBroker(Protocol):
     ) -> BrokerOrderSnapshot:
         """Submit a limit buy order and return the first observed broker snapshot."""
 
+    def place_limit_sell(
+        self,
+        *,
+        symbol: str,
+        quantity: int,
+        limit_price: Decimal,
+        trade_mode: TradeMode,
+        time_in_force: TimeInForce,
+        remark: str | None = None,
+    ) -> BrokerOrderSnapshot:
+        """Submit a limit sell order and return the first observed broker snapshot."""
+
     def get_order(
         self,
         *,

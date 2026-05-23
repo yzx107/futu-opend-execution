@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .env
 logs/
+reports/agent/
 presets/
 *.pyc
 dist/
