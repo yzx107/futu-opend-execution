@@ -34,10 +34,8 @@ class HshareL2ReplayProvider:
     def iter_events(self) -> Iterable[MarketEvent]:
         wanted = {symbol.split(".", 1)[1] for symbol in self.symbols}
         for date in self.dates:
-            for row in self._read_kind(date, "trades"):
+            for row in self._read_kind(date, "trades", symbols=wanted):
                 symbol = _symbol_from_row(row)
-                if wanted and symbol.split(".", 1)[1] not in wanted:
-                    continue
                 yield MarketEvent(
                     symbol=symbol,
                     timestamp=_row_time(row),
@@ -47,10 +45,8 @@ class HshareL2ReplayProvider:
                     turnover=_turnover(row),
                     side=_trade_side(row.get("Dir")),
                 )
-            for row in self._read_kind(date, "orders"):
+            for row in self._read_kind(date, "orders", symbols=wanted):
                 symbol = _symbol_from_row(row)
-                if wanted and symbol.split(".", 1)[1] not in wanted:
-                    continue
                 yield MarketEvent(
                     symbol=symbol,
                     timestamp=_row_time(row),
@@ -78,11 +74,11 @@ class HshareL2ReplayProvider:
     ) -> "InMemoryReplayProvider":
         return InMemoryReplayProvider(events, interval_seconds=interval_seconds)
 
-    def _read_kind(self, date: str, kind: str) -> list[dict[str, Any]]:
+    def _read_kind(self, date: str, kind: str, *, symbols: set[str]) -> list[dict[str, Any]]:
         files = sorted((self.data_root / kind / f"date={date}").glob("*.parquet"))
         rows: list[dict[str, Any]] = []
         for path in files:
-            rows.extend(_read_parquet_rows(path, limit_rows=self.limit_rows))
+            rows.extend(_read_parquet_rows(path, limit_rows=self.limit_rows, symbols=symbols))
         return rows
 
 
@@ -98,13 +94,16 @@ class InMemoryReplayProvider:
         yield from build_market_states(self.events, interval_seconds=self.interval_seconds, source="fixture")
 
 
-def _read_parquet_rows(path: Path, *, limit_rows: int | None) -> list[dict[str, Any]]:
+def _read_parquet_rows(path: Path, *, limit_rows: int | None, symbols: set[str]) -> list[dict[str, Any]]:
     try:
         import polars as pl  # type: ignore
     except Exception:
         pl = None
     if pl is not None:
         frame = pl.scan_parquet(str(path))
+        if symbols and "source_file" in frame.collect_schema().names():
+            suffixes = [f"/{symbol}.csv" for symbol in symbols]
+            frame = frame.filter(pl.any_horizontal([pl.col("source_file").str.ends_with(suffix) for suffix in suffixes]))
         if limit_rows is not None:
             frame = frame.limit(limit_rows)
         return frame.collect().to_dicts()
@@ -114,6 +113,9 @@ def _read_parquet_rows(path: Path, *, limit_rows: int | None) -> list[dict[str, 
     except Exception as exc:  # pragma: no cover - exercised only on hosts without parquet dependencies
         raise RuntimeError("Reading Hshare parquet requires polars or pandas+pyarrow") from exc
     frame = pd.read_parquet(path)
+    if symbols and "source_file" in frame.columns:
+        suffixes = tuple(f"/{symbol}.csv" for symbol in symbols)
+        frame = frame[frame["source_file"].astype(str).str.endswith(suffixes)]
     if limit_rows is not None:
         frame = frame.head(limit_rows)
     return frame.to_dict("records")
