@@ -5,7 +5,7 @@ import json
 import os
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +27,7 @@ def _approval_payload():
         "approved": True,
         "approved_by_operator": "operator",
         "confirmation_phrase": "确认实盘",
+        "source_signal_status": "DRY_RUN_SIGNAL",
         "lot_size": 100,
         "market_snapshot": {
             "stale": False,
@@ -78,6 +79,10 @@ class RealCliTests(unittest.TestCase):
                 "确认实盘",
                 "--audit-log",
                 str(audit),
+                "--max-qty",
+                "100",
+                "--max-notional",
+                "30000",
                 "--fake-broker",
             ])
 
@@ -99,12 +104,118 @@ class RealCliTests(unittest.TestCase):
                 "确认实盘",
                 "--audit-log",
                 str(audit),
+                "--max-qty",
+                "100",
+                "--max-notional",
+                "30000",
                 "--fake-broker",
             ])
 
         self.assertEqual(code, 0)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["filled_quantity"], 100)
+
+    def test_submit_approved_requires_explicit_max_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir, patch.dict(os.environ, {"FUTU_ALLOW_REAL_TRADE": "1"}):
+            approval = self._write_approval(temp_dir)
+            audit = Path(temp_dir) / "audit.jsonl"
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    main([
+                        "real",
+                        "submit-approved",
+                        "--approval-file",
+                        str(approval),
+                        "--confirm-text",
+                        "确认实盘",
+                        "--audit-log",
+                        str(audit),
+                        "--fake-broker",
+                    ])
+
+    def test_draft_approval_cli_from_strategy_signal_jsonl(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            signal_log = Path(temp_dir) / "signals.jsonl"
+            output = Path(temp_dir) / "draft.json"
+            signal_log.write_text(
+                json.dumps(
+                    {
+                        "event": "strategy_signal",
+                        "signal_id": "sig-cli",
+                        "symbol": "HK.00700",
+                        "status": "DRY_RUN_SIGNAL",
+                        "side": "SELL",
+                        "role": "TRADING_SELL",
+                        "quantity": 100,
+                        "limit_price": "300.00",
+                        "expected_edge_bps": "50",
+                        "market_snapshot": {"spread_bps": "5"},
+                        "inventory_snapshot": {
+                            "trading_available_to_sell": 100,
+                            "trading_available_to_rebuy": 0,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            code, payload = self._run([
+                "real",
+                "draft-approval",
+                "--signal-log",
+                str(signal_log),
+                "--output",
+                str(output),
+            ])
+            draft = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(draft["source_signal_status"], "DRY_RUN_SIGNAL")
+        self.assertFalse(draft["approved"])
+
+    def test_draft_approval_cli_rejects_blocked_signal_status(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            signal_log = Path(temp_dir) / "signals.jsonl"
+            output = Path(temp_dir) / "draft.json"
+            signal_log.write_text(
+                json.dumps(
+                    {
+                        "event": "strategy_signal",
+                        "signal_id": "sig-blocked",
+                        "symbol": "HK.00700",
+                        "status": "RISK_BLOCKED",
+                        "side": "SELL",
+                        "role": "TRADING_SELL",
+                        "quantity": 100,
+                        "limit_price": "300.00",
+                        "market_snapshot": {"spread_bps": "5"},
+                        "inventory_snapshot": {
+                            "trading_available_to_sell": 100,
+                            "trading_available_to_rebuy": 0,
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            code, payload = self._run([
+                "real",
+                "draft-approval",
+                "--signal-log",
+                str(signal_log),
+                "--output",
+                str(output),
+            ])
+            output_exists = output.exists()
+
+        self.assertEqual(code, 2)
+        self.assertFalse(payload["ok"])
+        self.assertFalse(output_exists)
 
 
 if __name__ == "__main__":

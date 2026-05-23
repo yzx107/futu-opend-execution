@@ -101,6 +101,16 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main real validate-approval \
   --approval-file approvals/example_approval.json
 ```
 
+Draft an approval file from the latest executable `strategy_signal` JSONL row:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main real draft-approval \
+  --signal-log logs/agent/monitor.jsonl \
+  --output approvals/draft_00700.json
+```
+
+`draft-approval` refuses `source_signal_status=RISK_BLOCKED` and `source_signal_status=NOT_EXECUTABLE`. Drafts are always `approved=false` and have an empty confirmation phrase until an operator reviews and edits them.
+
 Submit an already approved file through all real-order gates:
 
 ```bash
@@ -108,8 +118,12 @@ FUTU_ALLOW_REAL_TRADE=1 \
 PYTHONPATH=src python -m futu_opend_execution.cli.main real submit-approved \
   --approval-file approvals/example_approval.json \
   --confirm-text 确认实盘 \
+  --max-qty 100 \
+  --max-notional 30000 \
   --audit-log logs/agent/real_orders.jsonl
 ```
+
+`validate-approval` runs static schema/snapshot/source-signal checks only. `submit-approved` adds operator approval, expiration, confirmation phrase, kill-switch, explicit `--max-qty` / `--max-notional`, and `RealOrderGuard` checks immediately before broker submission.
 
 `submit-approved` does not accept direct `symbol` / `quantity` / `price` inputs. The service builds a `RealOrderIntent` from the approval file, runs `RealOrderGuard` immediately before the broker call, submits only limit orders, polls order status, cancels on timeout, and reconciles confirmed partial fills. Cancelled unfilled orders do not update inventory. Fills observed after cancel produce `reconciliation_warning`.
 

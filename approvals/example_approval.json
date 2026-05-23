@@ -12,6 +12,7 @@
   "approved": false,
   "approved_by_operator": "",
   "confirmation_phrase": "",
+  "source_signal_status": "DRY_RUN_SIGNAL",
   "lot_size": 100,
   "order_type": "LIMIT",
   "market_snapshot": {

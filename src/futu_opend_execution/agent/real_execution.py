@@ -15,7 +15,7 @@ from futu_opend_execution.agent.approval import (
     PendingRealOrderApproval,
     approval_to_intent,
     load_approval_file,
-    validate_approval,
+    validate_approval_for_submit,
 )
 from futu_opend_execution.agent.risk import RealOrderGuard
 from futu_opend_execution.config import RuntimeConfig
@@ -112,11 +112,10 @@ class RealExecutionService:
         self._audit("real_order_intent", _intent_to_audit(intent, approval))
 
         try:
-            validate_approval(
+            validate_approval_for_submit(
                 approval,
                 confirmation_phrase=self._guard.confirmation_phrase,
                 kill_switch_file=self._guard.kill_switch_file,
-                require_approved=True,
             )
             self._guard.validate(
                 intent,

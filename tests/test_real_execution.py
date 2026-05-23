@@ -35,6 +35,7 @@ def _approval_payload(*, side="SELL", role="TRADING_SELL", inventory=None):
         "approved": True,
         "approved_by_operator": "operator",
         "confirmation_phrase": "确认实盘",
+        "source_signal_status": "DRY_RUN_SIGNAL",
         "lot_size": 100,
         "market_snapshot": {
             "stale": False,

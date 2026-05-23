@@ -10,7 +10,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
-from futu_opend_execution.agent.approval import approval_validation_errors, load_approval_file
+from futu_opend_execution.agent.approval import (
+    approval_static_validation_errors,
+    draft_approval_from_strategy_signal,
+    load_approval_file,
+)
 from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
@@ -72,6 +76,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     real = sub.add_parser("real", help="Manual approval-file real-order workflow")
     real_sub = real.add_subparsers(dest="real_command", required=True)
+    draft_approval = real_sub.add_parser("draft-approval", help="Draft an approval file from a strategy_signal JSONL row")
+    draft_approval.add_argument("--signal-log", required=True)
+    draft_approval.add_argument("--output", required=True)
+    draft_approval.add_argument("--signal-id", default=None)
+    draft_approval.add_argument("--expires-minutes", type=int, default=5)
+    draft_approval.add_argument("--max-spread-bps", default="20")
+
     validate_approval = real_sub.add_parser("validate-approval", help="Validate an approval file without connecting OpenD")
     validate_approval.add_argument("--approval-file", required=True)
     validate_approval.add_argument("--kill-switch-file", default="logs/agent/KILL_SWITCH")
@@ -81,8 +92,8 @@ def build_parser() -> argparse.ArgumentParser:
     submit_approved.add_argument("--confirm-text", required=True)
     submit_approved.add_argument("--audit-log", default="logs/agent/real_orders.jsonl")
     submit_approved.add_argument("--kill-switch-file", default="logs/agent/KILL_SWITCH")
-    submit_approved.add_argument("--max-qty", type=int, default=None)
-    submit_approved.add_argument("--max-notional", default=None)
+    submit_approved.add_argument("--max-qty", type=int, required=True)
+    submit_approved.add_argument("--max-notional", required=True)
     submit_approved.add_argument("--lot-size", type=int, default=None)
     submit_approved.add_argument("--timeout-seconds", type=float, default=1.0)
     submit_approved.add_argument("--poll-interval-seconds", type=float, default=0.2)
@@ -201,24 +212,22 @@ def _cmd_watchlist(args) -> int:
 
 
 def _cmd_real(args) -> int:
+    if args.real_command == "draft-approval":
+        return _cmd_real_draft_approval(args)
+
     if args.real_command == "validate-approval":
         approval = load_approval_file(args.approval_file)
-        errors = approval_validation_errors(
-            approval,
-            kill_switch_file=Path(args.kill_switch_file),
-            require_approved=False,
-        )
-        print(json.dumps({"ok": not errors, "approval_id": approval.approval_id, "errors": errors}, ensure_ascii=False))
+        errors = approval_static_validation_errors(approval)
+        print(json.dumps({"ok": not errors, "layer": "static", "approval_id": approval.approval_id, "errors": errors}, ensure_ascii=False))
         return 0 if not errors else 2
 
     if args.real_command == "submit-approved":
         approval = load_approval_file(args.approval_file)
-        max_notional = Decimal(str(args.max_notional)) if args.max_notional is not None else approval.notional
         guard = RealOrderGuard(
             allow_real_trade=True,
             kill_switch_file=Path(args.kill_switch_file),
-            max_qty=args.max_qty or approval.quantity,
-            max_notional=max_notional,
+            max_qty=args.max_qty,
+            max_notional=Decimal(str(args.max_notional)),
             lot_size=args.lot_size or approval.lot_size,
         )
         broker = _CliFakeBroker() if args.fake_broker else None
@@ -237,6 +246,54 @@ def _cmd_real(args) -> int:
         return 0 if summary.ok else 2
 
     raise AssertionError(args.real_command)
+
+
+def _cmd_real_draft_approval(args) -> int:
+    rows = _read_jsonl_rows(args.signal_log)
+    signal = _select_strategy_signal(rows, signal_id=args.signal_id)
+    if signal is None:
+        print(json.dumps({"ok": False, "error": "strategy_signal not found"}, ensure_ascii=False))
+        return 2
+    try:
+        draft = draft_approval_from_strategy_signal(
+            signal,
+            expires_minutes=args.expires_minutes,
+            max_spread_bps=args.max_spread_bps,
+        )
+    except Exception as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(draft, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps({"ok": True, "approval_id": draft["approval_id"], "output": str(output)}, ensure_ascii=False))
+    return 0
+
+
+def _read_jsonl_rows(path: str | Path) -> list[dict[str, object]]:
+    target = Path(path)
+    rows: list[dict[str, object]] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _select_strategy_signal(
+    rows: list[dict[str, object]],
+    *,
+    signal_id: str | None,
+) -> dict[str, object] | None:
+    candidates = [row for row in rows if row.get("event") == "strategy_signal"]
+    if signal_id:
+        for row in reversed(candidates):
+            if row.get("signal_id") == signal_id or row.get("client_intent_id") == signal_id:
+                return row
+        return None
+    return candidates[-1] if candidates else None
 
 
 def _add_position_args(parser: argparse.ArgumentParser) -> None:

@@ -11,11 +11,13 @@ Real order submission must pass all service-side gates:
 - confirmation phrase `确认实盘`
 - kill switch absent
 - approval file present
+- approval has `source_signal_status`
+- `source_signal_status` is not `RISK_BLOCKED` or `NOT_EXECUTABLE`
 - approval `approved=true`
 - approval not expired
 - approval snapshot matches the source signal when `signal_snapshot` is present
 - no CRITICAL risk snapshot
-- explicit positive `max_qty` and `max_notional`
+- submit CLI explicit positive `--max-qty` and `--max-notional`
 - lot-aligned positive quantity
 - limit price only
 - duplicate intent lock
@@ -28,7 +30,7 @@ The cost reducer may sell only `TRADING_SELL` inventory and may rebuy only previ
 
 `LIVE_REAL_COST_REDUCER_AUTO` remains disabled by default and is not exposed by the PR2 CLI.
 
-Manual real orders use `approvals/*.json` records. The example approval is intentionally expired and `approved=false`; it is a schema example, not an executable instruction. `validate-approval` performs static validation and never connects to OpenD. `submit-approved` still has to pass `RealOrderGuard` immediately before broker submission.
+Manual real orders use `approvals/*.json` records. The example approval is intentionally expired and `approved=false`; it is a schema example, not an executable instruction. `draft-approval` can create an unapproved draft from a PR1 `strategy_signal` JSONL row, but refuses `RISK_BLOCKED` and `NOT_EXECUTABLE` source signals. `validate-approval` performs static schema/snapshot/source-signal validation and never connects to OpenD. `submit-approved` adds operator approval, expiration, confirmation phrase, kill switch, explicit max limits, and `RealOrderGuard` immediately before broker submission.
 
 Order execution is limit-only and polls broker order status after submission. On timeout, the service sends `modify_order(CANCEL)` and reconciles only confirmed fills. Cancelled unfilled orders do not update inventory; cancelled partially filled orders update only the confirmed filled quantity. If a fill appears after cancellation, the audit log emits `reconciliation_warning` instead of silently ignoring it.
 
