@@ -19,6 +19,7 @@ from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
 from futu_opend_execution.data.hshare_l2 import DEFAULT_HSHARE_L2_ROOT, HshareL2ReplayProvider
+from futu_opend_execution.data.hshare_top_of_book import HshareTopOfBookReplayProvider
 from futu_opend_execution.data.market import MarketEvent
 from futu_opend_execution.data.opend_live import OpenDLiveProvider
 from futu_opend_execution.execution.positions import OpenDPositionProvider
@@ -39,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_position_args(replay)
     replay.add_argument("--date", action="append", dest="dates", help="Trading date YYYY-MM-DD; can repeat")
     replay.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    replay.add_argument(
+        "--top-of-book-root",
+        default=None,
+        help="Use Hshare Lab v2 orderbook_replay__top_of_book_only output instead of raw candidate_cleaned.",
+    )
     replay.add_argument("--interval-seconds", type=int, default=1)
     replay.add_argument("--limit-rows", type=int, default=None)
     replay.add_argument("--fixture", action="store_true", help="Use built-in synthetic L2 events for smoke tests")
@@ -141,13 +147,22 @@ def _cmd_replay(args) -> int:
     else:
         if not args.dates:
             raise SystemExit("replay requires --date unless --fixture is used")
-        provider = HshareL2ReplayProvider(
-            data_root=args.data_root,
-            dates=args.dates,
-            symbols=[config.symbol],
-            interval_seconds=args.interval_seconds,
-            limit_rows=args.limit_rows,
-        )
+        if args.top_of_book_root:
+            provider = HshareTopOfBookReplayProvider(
+                data_root=args.top_of_book_root,
+                dates=args.dates,
+                symbols=[config.symbol],
+                interval_seconds=args.interval_seconds,
+                limit_rows=args.limit_rows,
+            )
+        else:
+            provider = HshareL2ReplayProvider(
+                data_root=args.data_root,
+                dates=args.dates,
+                symbols=[config.symbol],
+                interval_seconds=args.interval_seconds,
+                limit_rows=args.limit_rows,
+            )
     summary = run_replay(config=config, market_states=provider.iter_market_states(), log_path=args.log_path)
     print(json.dumps(summary, ensure_ascii=False))
     return 0

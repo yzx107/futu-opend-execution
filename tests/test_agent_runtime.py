@@ -13,11 +13,25 @@ from futu_opend_execution.cli.main import _fixture_events
 class AgentRuntimeTests(unittest.TestCase):
     def test_cli_parser_accepts_core_commands(self) -> None:
         parser = build_parser()
-        replay = parser.parse_args(["replay", "HK.00700", "--current-qty", "200", "--cost-price", "100", "--lot-size", "100", "--fixture"])
+        replay = parser.parse_args([
+            "replay",
+            "HK.00700",
+            "--current-qty",
+            "200",
+            "--cost-price",
+            "100",
+            "--lot-size",
+            "100",
+            "--date",
+            "2026-05-22",
+            "--top-of-book-root",
+            "/tmp/top",
+        ])
         monitor = parser.parse_args(["monitor", "00700", "--current-qty", "200", "--cost-price", "100", "--lot-size", "100", "--fake"])
         watchlist = parser.parse_args(["watchlist", "validate", "--config", "configs/watchlist.example.json"])
 
         self.assertEqual(replay.command, "replay")
+        self.assertEqual(replay.top_of_book_root, "/tmp/top")
         self.assertEqual(monitor.command, "monitor")
         self.assertEqual(watchlist.command, "watchlist")
 

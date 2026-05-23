@@ -46,6 +46,28 @@ class CostReducerStrategy:
                 best_ask=market.best_ask,
                 last_sell_price=state.last_sell_price,
             )
+        if getattr(market, "book_quality", "UNKNOWN") == "BLOCKED":
+            return build_executable_intent(
+                decision=CostReducerDecision(CostReducerAction.BLOCK, reason="book quality gate blocked"),
+                market=adaptive,
+                inventory=inventory,
+                rules=self.rules,
+                policy=self.policy,
+                best_bid=market.best_bid,
+                best_ask=market.best_ask,
+                last_sell_price=state.last_sell_price,
+            )
+        if getattr(market, "book_depth_limited", False):
+            return build_executable_intent(
+                decision=CostReducerDecision(CostReducerAction.BLOCK, reason="book depth unavailable"),
+                market=adaptive,
+                inventory=inventory,
+                rules=self.rules,
+                policy=self.policy,
+                best_bid=market.best_bid,
+                best_ask=market.best_ask,
+                last_sell_price=state.last_sell_price,
+            )
         decision = CostReducerEngine(self.rules).evaluate(
             inventory=inventory,
             market=adaptive,

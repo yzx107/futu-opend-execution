@@ -23,16 +23,25 @@ class MarketEvent:
     bid_size: Decimal | str | int | float | None = None
     ask_price: Decimal | str | int | float | None = None
     ask_size: Decimal | str | int | float | None = None
+    book_quality: str | None = None
+    book_quality_score: Decimal | str | int | float | None = None
+    book_crossed: bool = False
+    book_residue: bool = False
+    book_window_excluded: bool = False
+    same_millisecond_batch_risk: bool = False
+    book_depth_limited: bool = False
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
         if "." not in symbol:
             symbol = f"HK.{symbol}"
         object.__setattr__(self, "symbol", symbol)
-        for name in ("price", "volume", "turnover", "bid_price", "bid_size", "ask_price", "ask_size"):
+        for name in ("price", "volume", "turnover", "bid_price", "bid_size", "ask_price", "ask_size", "book_quality_score"):
             object.__setattr__(self, name, _to_decimal(getattr(self, name)))
         if self.side is not None:
             object.__setattr__(self, "side", self.side.strip().upper())
+        if self.book_quality is not None:
+            object.__setattr__(self, "book_quality", self.book_quality.strip().upper())
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +72,13 @@ class MarketState:
     market_state: str | None = None
     stale: bool = False
     orderbook_limited: bool = False
+    book_quality: str = "UNKNOWN"
+    book_quality_score: Decimal | None = None
+    book_crossed: bool = False
+    book_residue: bool = False
+    book_window_excluded: bool = False
+    same_millisecond_batch_risk: bool = False
+    book_depth_limited: bool = False
 
 
 def build_market_states(
@@ -89,9 +105,17 @@ def build_market_states(
     bid_size = Decimal("0")
     ask_size = Decimal("0")
     tick_count = 0
+    book_quality = "UNKNOWN"
+    book_quality_score: Decimal | None = None
+    book_crossed = False
+    book_residue = False
+    book_window_excluded = False
+    same_millisecond_batch_risk = False
+    book_depth_limited = False
 
     def flush(until: datetime) -> None:
         nonlocal bucket_events, cumulative_volume, cumulative_turnover, last_price, best_bid, best_ask, bid_size, ask_size, tick_count
+        nonlocal book_quality, book_quality_score, book_crossed, book_residue, book_window_excluded, same_millisecond_batch_risk, book_depth_limited
         if not bucket_events:
             return
         volume_delta = Decimal("0")
@@ -107,6 +131,14 @@ def build_market_states(
                 vwap_inputs.append((event.price, volume))
                 tick_count += 1
             best_bid, bid_size, best_ask, ask_size = _apply_book_event(event, best_bid, bid_size, best_ask, ask_size)
+            if event.book_quality is not None:
+                book_quality = event.book_quality
+                book_quality_score = event.book_quality_score
+                book_crossed = event.book_crossed
+                book_residue = event.book_residue
+                book_window_excluded = event.book_window_excluded
+                same_millisecond_batch_risk = event.same_millisecond_batch_risk
+                book_depth_limited = event.book_depth_limited
         cumulative_volume += volume_delta
         cumulative_turnover += turnover_delta
         window_prices = prices[-rolling_window:]
@@ -134,7 +166,14 @@ def build_market_states(
                 turnover_delta=turnover_delta,
                 tick_count=tick_count,
                 source=source,
-                orderbook_limited=best_bid is None or best_ask is None,
+                orderbook_limited=best_bid is None or best_ask is None or book_quality == "BLOCKED" or book_depth_limited,
+                book_quality=book_quality,
+                book_quality_score=book_quality_score,
+                book_crossed=book_crossed,
+                book_residue=book_residue,
+                book_window_excluded=book_window_excluded,
+                same_millisecond_batch_risk=same_millisecond_batch_risk,
+                book_depth_limited=book_depth_limited,
             )
         )
         bucket_events = []

@@ -155,6 +155,20 @@ The console has no one-click real-order button.
 
 Trades map to `MarketEvent`. Orders are used only when side-like fields are explicit; if side is unavailable, replay continues with trade-derived VWAP/volatility and marks book-derived fields as limited/unavailable rather than fabricating spread or imbalance. See `docs/hshare_l2_replay.md` for the probe harness before using reconstructed order book fields.
 
+When Hshare Lab v2 has materialized the bounded top-of-book handoff, replay can consume it explicitly:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main replay HK.01609 \
+  --current-qty 30 \
+  --cost-price 190 \
+  --lot-size 15 \
+  --date 2026-05-22 \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_only \
+  --log-path logs/agent/replay_01609_top_of_book.jsonl
+```
+
+Only rows passing the Hshare v2 quality gate are admitted as replay best bid/ask. Crossed, residue, excluded, same-millisecond-risk, or invalid rows are marked `book_quality=BLOCKED`. The top-of-book-only release does not include verified depth, queue semantics, or fill realism, so cost-reducer execution remains fail-closed when depth is unavailable.
+
 ## Development
 
 ```bash

@@ -84,6 +84,33 @@ class CostReducerStrategyTests(unittest.TestCase):
 
         self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
 
+    def test_top_of_book_only_depth_limit_is_risk_blocked(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
+        inventory = build_inventory_for_existing_position(config)
+        market = self._sell_state()
+        object.__setattr__(market, "book_quality", "OK_TOP_OF_BOOK_ONLY")
+        object.__setattr__(market, "book_depth_limited", True)
+        object.__setattr__(market, "orderbook_limited", True)
+
+        intent = default_strategy(config).evaluate(market=market, inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.action, CostReducerAction.BLOCK)
+        self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
+        self.assertEqual(intent.reason, "book depth unavailable")
+
+    def test_blocked_book_quality_is_risk_blocked(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
+        inventory = build_inventory_for_existing_position(config)
+        market = self._sell_state()
+        object.__setattr__(market, "book_quality", "BLOCKED")
+        object.__setattr__(market, "book_crossed", True)
+
+        intent = default_strategy(config).evaluate(market=market, inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.action, CostReducerAction.BLOCK)
+        self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
+        self.assertEqual(intent.reason, "book quality gate blocked")
+
     def test_no_previous_sell_blocks_rebuy(self) -> None:
         config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
         inventory = build_inventory_for_existing_position(config)
