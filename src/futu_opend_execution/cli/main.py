@@ -10,12 +10,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Sequence
 
+from futu_opend_execution.agent.approval import approval_validation_errors, load_approval_file
+from futu_opend_execution.agent.real_execution import RealExecutionService
+from futu_opend_execution.agent.risk import RealOrderGuard
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
 from futu_opend_execution.data.hshare_l2 import DEFAULT_HSHARE_L2_ROOT, HshareL2ReplayProvider
 from futu_opend_execution.data.market import MarketEvent
 from futu_opend_execution.data.opend_live import OpenDLiveProvider
 from futu_opend_execution.execution.positions import OpenDPositionProvider
-from futu_opend_execution.models import TradeMode
+from futu_opend_execution.models import BrokerOrderSnapshot, BrokerOrderStatus, TradeMode
 from futu_opend_execution.strategy_config import CostReducerRuntimeParams, config_to_jsonable
 from futu_opend_execution.watchlist import WatchlistConfigError, load_watchlist_config
 
@@ -66,6 +69,24 @@ def build_parser() -> argparse.ArgumentParser:
     auto_real = sub.add_parser("auto-real", help="Validate auto-real gates; real execution remains disabled by default")
     auto_real.add_argument("--confirm-text", default="")
     auto_real.add_argument("--print-config", action="store_true")
+
+    real = sub.add_parser("real", help="Manual approval-file real-order workflow")
+    real_sub = real.add_subparsers(dest="real_command", required=True)
+    validate_approval = real_sub.add_parser("validate-approval", help="Validate an approval file without connecting OpenD")
+    validate_approval.add_argument("--approval-file", required=True)
+    validate_approval.add_argument("--kill-switch-file", default="logs/agent/KILL_SWITCH")
+
+    submit_approved = real_sub.add_parser("submit-approved", help="Submit an already approved limit order through all real-order gates")
+    submit_approved.add_argument("--approval-file", required=True)
+    submit_approved.add_argument("--confirm-text", required=True)
+    submit_approved.add_argument("--audit-log", default="logs/agent/real_orders.jsonl")
+    submit_approved.add_argument("--kill-switch-file", default="logs/agent/KILL_SWITCH")
+    submit_approved.add_argument("--max-qty", type=int, default=None)
+    submit_approved.add_argument("--max-notional", default=None)
+    submit_approved.add_argument("--lot-size", type=int, default=None)
+    submit_approved.add_argument("--timeout-seconds", type=float, default=1.0)
+    submit_approved.add_argument("--poll-interval-seconds", type=float, default=0.2)
+    submit_approved.add_argument("--fake-broker", action="store_true", help="Use a local fake broker for tests; never connects OpenD")
     return parser
 
 
@@ -87,6 +108,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.print_config:
             print(json.dumps(config_to_jsonable(CostReducerRuntimeParams()), ensure_ascii=False))
         return 2
+    if args.command == "real":
+        return _cmd_real(args)
     raise AssertionError(args.command)
 
 
@@ -177,6 +200,45 @@ def _cmd_watchlist(args) -> int:
     raise AssertionError(args.watchlist_command)
 
 
+def _cmd_real(args) -> int:
+    if args.real_command == "validate-approval":
+        approval = load_approval_file(args.approval_file)
+        errors = approval_validation_errors(
+            approval,
+            kill_switch_file=Path(args.kill_switch_file),
+            require_approved=False,
+        )
+        print(json.dumps({"ok": not errors, "approval_id": approval.approval_id, "errors": errors}, ensure_ascii=False))
+        return 0 if not errors else 2
+
+    if args.real_command == "submit-approved":
+        approval = load_approval_file(args.approval_file)
+        max_notional = Decimal(str(args.max_notional)) if args.max_notional is not None else approval.notional
+        guard = RealOrderGuard(
+            allow_real_trade=True,
+            kill_switch_file=Path(args.kill_switch_file),
+            max_qty=args.max_qty or approval.quantity,
+            max_notional=max_notional,
+            lot_size=args.lot_size or approval.lot_size,
+        )
+        broker = _CliFakeBroker() if args.fake_broker else None
+        service = RealExecutionService(
+            broker=broker,
+            guard=guard,
+            audit_log_path=args.audit_log,
+            poll_interval_seconds=args.poll_interval_seconds,
+            timeout_seconds=args.timeout_seconds,
+        )
+        try:
+            summary = service.submit_approval(approval, confirm_text=args.confirm_text)
+        finally:
+            service.close()
+        print(json.dumps(summary.to_jsonable(), ensure_ascii=False))
+        return 0 if summary.ok else 2
+
+    raise AssertionError(args.real_command)
+
+
 def _add_position_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("symbol", help="HK symbol, e.g. HK.00700")
     parser.add_argument("--current-qty", type=int, required=True)
@@ -236,6 +298,45 @@ class _FakeLiveProvider:
         index = min(self._index[target], len(states) - 1)
         self._index[target] += 1
         return states[index]
+
+
+class _CliFakeBroker:
+    supports_native_ioc = False
+
+    def __init__(self) -> None:
+        self._latest: BrokerOrderSnapshot | None = None
+
+    def place_limit_buy(self, **kwargs) -> BrokerOrderSnapshot:
+        return self._place(kwargs)
+
+    def place_limit_sell(self, **kwargs) -> BrokerOrderSnapshot:
+        return self._place(kwargs)
+
+    def get_order(self, *, order_id: str, symbol: str, trade_mode: TradeMode) -> BrokerOrderSnapshot:
+        del order_id, symbol, trade_mode
+        if self._latest is None:
+            raise RuntimeError("fake broker order missing")
+        return self._latest
+
+    def cancel_order(self, *, order_id: str, symbol: str, trade_mode: TradeMode) -> None:
+        del order_id, symbol, trade_mode
+
+    def close(self) -> None:
+        return None
+
+    def _place(self, kwargs) -> BrokerOrderSnapshot:
+        del kwargs["time_in_force"], kwargs["trade_mode"], kwargs["remark"]
+        self._latest = BrokerOrderSnapshot(
+            order_id="fake-order-1",
+            symbol=kwargs["symbol"],
+            status=BrokerOrderStatus.FILLED_ALL,
+            quantity=kwargs["quantity"],
+            price=kwargs["limit_price"],
+            dealt_quantity=kwargs["quantity"],
+            dealt_avg_price=kwargs["limit_price"],
+            updated_time=datetime.now().isoformat(),
+        )
+        return self._latest
 
 
 if __name__ == "__main__":

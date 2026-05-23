@@ -1,0 +1,32 @@
+{
+  "approval_id": "example-approval-do-not-use-live",
+  "signal_id": "example-signal",
+  "symbol": "HK.00700",
+  "side": "SELL",
+  "role": "TRADING_SELL",
+  "quantity": 100,
+  "limit_price": "300.00",
+  "expected_edge_bps": "50",
+  "created_at": "2026-05-23T09:30:00+08:00",
+  "expires_at": "2026-05-23T09:35:00+08:00",
+  "approved": false,
+  "approved_by_operator": "",
+  "confirmation_phrase": "",
+  "lot_size": 100,
+  "order_type": "LIMIT",
+  "market_snapshot": {
+    "stale": false,
+    "spread_bps": "5",
+    "max_spread_bps": "20",
+    "best_bid": "300.00",
+    "best_ask": "300.20"
+  },
+  "inventory_snapshot": {
+    "trading_available_to_sell": 100,
+    "trading_available_to_rebuy": 0
+  },
+  "risk_snapshot": {
+    "max_severity": "INFO",
+    "has_critical": false
+  }
+}
