@@ -29,11 +29,25 @@ class AgentRuntimeTests(unittest.TestCase):
         ])
         monitor = parser.parse_args(["monitor", "00700", "--current-qty", "200", "--cost-price", "100", "--lot-size", "100", "--fake"])
         watchlist = parser.parse_args(["watchlist", "validate", "--config", "configs/watchlist.example.json"])
+        optimize = parser.parse_args([
+            "optimize-cost-reducer",
+            "HK.00700",
+            "--current-qty",
+            "200",
+            "--cost-price",
+            "100",
+            "--lot-size",
+            "100",
+            "--fixture",
+            "--overextension-grid",
+            "1.5,2.0",
+        ])
 
         self.assertEqual(replay.command, "replay")
         self.assertEqual(replay.top_of_book_root, "/tmp/top")
         self.assertEqual(monitor.command, "monitor")
         self.assertEqual(watchlist.command, "watchlist")
+        self.assertEqual(optimize.command, "optimize-cost-reducer")
 
     def test_replay_emits_summary_and_paper_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

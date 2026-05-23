@@ -61,6 +61,26 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main paper logs/agent/replay_0
   --report-path reports/agent/paper_summary_00700.json
 ```
 
+Grid-search a small cost-reducer parameter set:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main optimize-cost-reducer HK.00700 \
+  --current-qty 200 \
+  --cost-price 100 \
+  --lot-size 100 \
+  --date 2026-05-21 \
+  --data-root /Volumes/Data/港股Tick数据/candidate_cleaned \
+  --overextension-grid 1.5,2.0,2.5 \
+  --pullback-grid 0.3,0.5,0.8 \
+  --safety-buffer-grid 20,30 \
+  --report-json reports/agent/optimizer_summary_00700.json \
+  --report-md reports/agent/optimizer_rank_00700.md
+```
+
+The optimizer uses the same fail-closed cost reducer gates as replay. If top-of-book quality or depth is insufficient, the result will show blocked rows instead of inventing executable signals.
+
+Read optimizer rankings defensively: rows with `open_quantity > 0` are unfinished sell legs, not completed high-sell/low-rebuy round trips. Prefer candidates with positive `realized_net_pnl`, completed `round_trips_completed`, low `open_quantity`, and low `quality_block_count`.
+
 Run live dry-run monitor from watchlist:
 
 ```bash

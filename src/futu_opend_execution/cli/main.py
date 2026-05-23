@@ -15,6 +15,7 @@ from futu_opend_execution.agent.approval import (
     draft_approval_from_strategy_signal,
     load_approval_file,
 )
+from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_reducer, write_optimizer_reports
 from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
@@ -49,6 +50,24 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--limit-rows", type=int, default=None)
     replay.add_argument("--fixture", action="store_true", help="Use built-in synthetic L2 events for smoke tests")
     replay.add_argument("--log-path", default="logs/agent/replay.jsonl")
+
+    optimize = sub.add_parser("optimize-cost-reducer", help="Grid-search dry-run cost reducer parameters")
+    _add_position_args(optimize)
+    optimize.add_argument("--date", action="append", dest="dates", help="Trading date YYYY-MM-DD; can repeat")
+    optimize.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    optimize.add_argument("--top-of-book-root", default=None)
+    optimize.add_argument("--interval-seconds", type=int, default=1)
+    optimize.add_argument("--limit-rows", type=int, default=None)
+    optimize.add_argument("--fixture", action="store_true")
+    optimize.add_argument("--top-n", type=int, default=20)
+    optimize.add_argument("--report-json", default="reports/agent/optimizer_summary.json")
+    optimize.add_argument("--report-md", default="reports/agent/optimizer_rank.md")
+    optimize.add_argument("--overextension-grid", default=None)
+    optimize.add_argument("--pullback-grid", default=None)
+    optimize.add_argument("--rebuy-anchor-grid", default=None)
+    optimize.add_argument("--safety-buffer-grid", default=None)
+    optimize.add_argument("--max-sell-ratio-grid", default=None)
+    optimize.add_argument("--max-round-trips-grid", default=None)
 
     paper = sub.add_parser("paper", help="Build paper ledger/report from replay JSONL")
     paper.add_argument("replay_log")
@@ -113,6 +132,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_positions(args)
     if args.command == "replay":
         return _cmd_replay(args)
+    if args.command == "optimize-cost-reducer":
+        return _cmd_optimize_cost_reducer(args)
     if args.command == "paper":
         print(json.dumps(run_paper(replay_log_path=args.replay_log, ledger_path=args.ledger_path, report_path=args.report_path), ensure_ascii=False))
         return 0
@@ -142,30 +163,55 @@ def _cmd_positions(args) -> int:
 
 def _cmd_replay(args) -> int:
     config = _config_from_args(args)
-    if args.fixture:
-        provider = HshareL2ReplayProvider.from_events(_fixture_events(config.symbol), interval_seconds=args.interval_seconds)
-    else:
-        if not args.dates:
-            raise SystemExit("replay requires --date unless --fixture is used")
-        if args.top_of_book_root:
-            provider = HshareTopOfBookReplayProvider(
-                data_root=args.top_of_book_root,
-                dates=args.dates,
-                symbols=[config.symbol],
-                interval_seconds=args.interval_seconds,
-                limit_rows=args.limit_rows,
-            )
-        else:
-            provider = HshareL2ReplayProvider(
-                data_root=args.data_root,
-                dates=args.dates,
-                symbols=[config.symbol],
-                interval_seconds=args.interval_seconds,
-                limit_rows=args.limit_rows,
-            )
+    provider = _replay_provider_from_args(args, config)
     summary = run_replay(config=config, market_states=provider.iter_market_states(), log_path=args.log_path)
     print(json.dumps(summary, ensure_ascii=False))
     return 0
+
+
+def _cmd_optimize_cost_reducer(args) -> int:
+    config = _config_from_args(args)
+    provider = _replay_provider_from_args(args, config)
+    default_grid = CostReducerGrid()
+    grid = CostReducerGrid(
+        overextension_vol_multiple=_decimal_tuple(args.overextension_grid, default_grid.overextension_vol_multiple),
+        high_pullback_vol_multiple=_decimal_tuple(args.pullback_grid, default_grid.high_pullback_vol_multiple),
+        rebuy_anchor_vol_band=_decimal_tuple(args.rebuy_anchor_grid, default_grid.rebuy_anchor_vol_band),
+        safety_buffer_bps=_decimal_tuple(args.safety_buffer_grid, default_grid.safety_buffer_bps),
+        max_sell_total_position_ratio=_decimal_tuple(args.max_sell_ratio_grid, default_grid.max_sell_total_position_ratio),
+        max_round_trips=_int_tuple(args.max_round_trips_grid, default_grid.max_round_trips),
+    )
+    summary = optimize_cost_reducer(
+        config=config,
+        market_states=provider.iter_market_states(),
+        grid=grid,
+        top_n=args.top_n,
+    )
+    write_optimizer_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
+    print(json.dumps({key: summary[key] for key in ("event", "symbol", "market_state_count", "grid_size", "top_n")}, ensure_ascii=False))
+    return 0
+
+
+def _replay_provider_from_args(args, config: TradingAgentConfig):
+    if args.fixture:
+        return HshareL2ReplayProvider.from_events(_fixture_events(config.symbol), interval_seconds=args.interval_seconds)
+    if not args.dates:
+        raise SystemExit(f"{args.command} requires --date unless --fixture is used")
+    if args.top_of_book_root:
+        return HshareTopOfBookReplayProvider(
+            data_root=args.top_of_book_root,
+            dates=args.dates,
+            symbols=[config.symbol],
+            interval_seconds=args.interval_seconds,
+            limit_rows=args.limit_rows,
+        )
+    return HshareL2ReplayProvider(
+        data_root=args.data_root,
+        dates=args.dates,
+        symbols=[config.symbol],
+        interval_seconds=args.interval_seconds,
+        limit_rows=args.limit_rows,
+    )
 
 
 def _cmd_monitor(args) -> int:
@@ -332,6 +378,18 @@ def _config_from_args(args) -> TradingAgentConfig:
         max_sell_qty_per_order=args.max_sell_qty_per_order,
         max_rebuy_qty_per_order=args.max_rebuy_qty_per_order,
     )
+
+
+def _decimal_tuple(value: str | None, default: tuple[Decimal, ...]) -> tuple[Decimal, ...]:
+    if not value:
+        return default
+    return tuple(Decimal(item.strip()) for item in value.split(",") if item.strip())
+
+
+def _int_tuple(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
+    if not value:
+        return default
+    return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
 def _fixture_events(symbol: str) -> list[MarketEvent]:

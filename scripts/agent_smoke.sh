@@ -13,7 +13,9 @@ rm -f \
   "${ROOT}/logs/agent/smoke_replay.jsonl" \
   "${ROOT}/logs/agent/smoke_paper_ledger.jsonl" \
   "${ROOT}/logs/agent/smoke_monitor.jsonl" \
-  "${ROOT}/reports/agent/smoke_paper_summary.json"
+  "${ROOT}/reports/agent/smoke_paper_summary.json" \
+  "${ROOT}/reports/agent/smoke_optimizer_summary.json" \
+  "${ROOT}/reports/agent/smoke_optimizer_rank.md"
 
 "${PY}" -m futu_opend_execution.cli.main positions --offline
 "${PY}" -m futu_opend_execution.cli.main watchlist validate \
@@ -29,6 +31,18 @@ rm -f \
 "${PY}" -m futu_opend_execution.cli.main paper "${ROOT}/logs/agent/smoke_replay.jsonl" \
   --ledger-path "${ROOT}/logs/agent/smoke_paper_ledger.jsonl" \
   --report-path "${ROOT}/reports/agent/smoke_paper_summary.json"
+"${PY}" -m futu_opend_execution.cli.main optimize-cost-reducer HK.00700 \
+  --current-qty 200 \
+  --cost-price 100 \
+  --lot-size 100 \
+  --fixture \
+  --overextension-grid 1.5,2.0 \
+  --pullback-grid 0.3 \
+  --rebuy-anchor-grid 1.0 \
+  --safety-buffer-grid 20 \
+  --max-sell-ratio-grid 0.5 \
+  --report-json "${ROOT}/reports/agent/smoke_optimizer_summary.json" \
+  --report-md "${ROOT}/reports/agent/smoke_optimizer_rank.md"
 "${PY}" -m futu_opend_execution.cli.main monitor HK.00700 \
   --current-qty 200 \
   --cost-price 100 \
