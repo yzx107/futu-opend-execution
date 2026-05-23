@@ -36,19 +36,19 @@ class CostReducerStrategyTests(unittest.TestCase):
         )
 
     def test_strategy_sells_existing_trading_bucket_only(self) -> None:
-        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="100", lot_size=100)
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
         inventory = build_inventory_for_existing_position(config)
 
         intent = default_strategy(config).evaluate(market=self._sell_state(), inventory=inventory, state=CostReducerState())
 
         self.assertEqual(intent.action, CostReducerAction.SELL_TRADING)
         self.assertEqual(intent.quantity, 100)
-        self.assertEqual(intent.status, CostReducerExecutableStatus.BLOCKED)
+        self.assertEqual(intent.status, CostReducerExecutableStatus.DRY_RUN_SIGNAL)
         self.assertIn("dry_run_only", intent.reason)
         self.assertEqual(inventory.current_position, 200)
 
     def test_strategy_rebuy_requires_prior_sell_and_cost_buffer(self) -> None:
-        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="100", lot_size=100)
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
         inventory = build_inventory_for_existing_position(config)
         inventory.record_trading_sell(quantity=100, price="106")
         state = CostReducerState(last_sell_price=Decimal("10.30"))
@@ -61,7 +61,57 @@ class CostReducerStrategyTests(unittest.TestCase):
 
         self.assertEqual(intent.action, CostReducerAction.REBUY_TRADING)
         self.assertEqual(intent.quantity, 100)
+        self.assertEqual(intent.status, CostReducerExecutableStatus.DRY_RUN_SIGNAL)
         self.assertIsNotNone(intent.limit_price)
+
+    def test_spread_too_wide_is_not_executable(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
+        inventory = build_inventory_for_existing_position(config)
+        market = self._sell_state()
+        object.__setattr__(market, "spread_bps", Decimal("25"))
+
+        intent = default_strategy(config).evaluate(market=market, inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.status, CostReducerExecutableStatus.NOT_EXECUTABLE)
+
+    def test_stale_market_is_risk_blocked(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
+        inventory = build_inventory_for_existing_position(config)
+        market = self._sell_state()
+        object.__setattr__(market, "stale", True)
+
+        intent = default_strategy(config).evaluate(market=market, inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
+
+    def test_no_previous_sell_blocks_rebuy(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100)
+        inventory = build_inventory_for_existing_position(config)
+        market = self._sell_state()
+        object.__setattr__(market, "last_price", Decimal("10.10"))
+        object.__setattr__(market, "best_ask", Decimal("10.10"))
+        object.__setattr__(market, "orderbook_imbalance", Decimal("0.5"))
+
+        intent = default_strategy(config).evaluate(market=market, inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.status, CostReducerExecutableStatus.NOT_EXECUTABLE)
+
+    def test_max_round_trips_reached_is_risk_blocked(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=200, cost_price="10", lot_size=100, max_round_trips=0)
+        inventory = build_inventory_for_existing_position(config)
+
+        intent = default_strategy(config).evaluate(market=self._sell_state(), inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
+
+    def test_max_sell_ratio_reached_is_risk_blocked(self) -> None:
+        config = TradingAgentConfig("HK.00700", current_qty=1000, cost_price="10", lot_size=100, max_sell_total_position_ratio="0.1")
+        inventory = build_inventory_for_existing_position(config)
+        inventory.record_trading_sell(quantity=100, price="10.5")
+
+        intent = default_strategy(config).evaluate(market=self._sell_state(), inventory=inventory, state=CostReducerState())
+
+        self.assertEqual(intent.status, CostReducerExecutableStatus.RISK_BLOCKED)
 
 
 if __name__ == "__main__":

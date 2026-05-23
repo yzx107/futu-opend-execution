@@ -58,6 +58,11 @@ class MarketState:
     turnover_delta: Decimal
     tick_count: int
     source: str = "unknown"
+    previous_close: Decimal | None = None
+    open_price: Decimal | None = None
+    market_state: str | None = None
+    stale: bool = False
+    orderbook_limited: bool = False
 
 
 def build_market_states(
@@ -129,6 +134,7 @@ def build_market_states(
                 turnover_delta=turnover_delta,
                 tick_count=tick_count,
                 source=source,
+                orderbook_limited=best_bid is None or best_ask is None,
             )
         )
         bucket_events = []

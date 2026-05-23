@@ -80,12 +80,6 @@ class InventoryManager:
         return {"event": "real_order_cancel_response", "order_id": str(order_id), "cancelled": True}
 
     def apply_fill(self, fill: FillRecord) -> dict[str, Any]:
-        if fill.order_id in self.cancelled_orders:
-            return {
-                "event": "inventory_reconciliation_warning",
-                "order_id": fill.order_id,
-                "message": "fill for cancelled order ignored pending manual review",
-            }
         if not self.ledger.add(fill):
             return {
                 "event": "real_fill_duplicate_ignored",
@@ -93,6 +87,7 @@ class InventoryManager:
                 "deal_id": fill.deal_id,
             }
 
+        cancelled = fill.order_id in self.cancelled_orders
         if fill.role is OrderRole.CORE_BUY:
             self.inventory.core_qty_filled += fill.quantity
             self.inventory.total_buy_notional += fill.price * Decimal(fill.quantity)
@@ -104,12 +99,13 @@ class InventoryManager:
         elif fill.role is OrderRole.TRADING_REBUY:
             self.inventory.record_trading_rebuy(quantity=fill.quantity, price=fill.price)
         return {
-            "event": "real_fill_applied",
+            "event": "reconciliation_warning" if cancelled else "real_fill_applied",
             "order_id": fill.order_id,
             "deal_id": fill.deal_id,
             "quantity": fill.quantity,
             "price": str(fill.price),
             "inventory": self.snapshot(),
+            "message": "fill arrived after cancel" if cancelled else "",
         }
 
     def snapshot(self) -> dict[str, Any]:

@@ -17,15 +17,19 @@ from futu_opend_execution.ledger.paper import PaperLedger, summarize_paper_ledge
 from futu_opend_execution.models import BrokerOrderSnapshot, TimeInForce, TradeMode
 from futu_opend_execution.services.cost_reducer import (
     CostReducerAction,
+    CostReducerDecision,
     CostReducerExecutableIntent,
     CostReducerExecutableStatus,
     CostReducerExecutionPolicy,
     CostReducerRules,
     CostReducerState,
     apply_dry_run_fill,
+    build_executable_intent,
 )
 from futu_opend_execution.strategies.cost_reducer import CostReducerStrategy
 from futu_opend_execution.strategy_config import ExecutionMode
+from futu_opend_execution.risk_sentinel import BlackSwanSentinel, risk_events_to_jsonl, should_pause_trading
+from futu_opend_execution.watchlist import CostReducerSymbolRules, WatchSymbolConfig, WatchlistConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,9 +38,13 @@ class TradingAgentConfig:
     current_qty: int
     cost_price: Decimal | str | int | float
     lot_size: int
+    core_qty_target: int | None = None
+    trading_qty_target: int | None = None
     max_sell_qty_per_order: int | None = None
     max_rebuy_qty_per_order: int | None = None
+    max_sell_total_position_ratio: Decimal | str | int | float = Decimal("0.5")
     max_round_trips: int = 1
+    cost_reducer_rules: CostReducerSymbolRules | None = None
 
     def __post_init__(self) -> None:
         symbol = self.symbol.strip().upper()
@@ -48,9 +56,38 @@ class TradingAgentConfig:
             raise ValueError("current_qty must be positive")
         if self.lot_size <= 0 or self.current_qty % self.lot_size != 0:
             raise ValueError("current_qty must be lot-aligned")
+        if self.core_qty_target is not None and self.trading_qty_target is not None:
+            if self.core_qty_target + self.trading_qty_target != self.current_qty:
+                raise ValueError("core_qty_target + trading_qty_target must equal current_qty")
+            if self.core_qty_target % self.lot_size != 0 or self.trading_qty_target % self.lot_size != 0:
+                raise ValueError("core/trading targets must be lot-aligned")
+        object.__setattr__(self, "max_sell_total_position_ratio", _decimal(self.max_sell_total_position_ratio))
+
+    @classmethod
+    def from_watch_symbol(cls, item: WatchSymbolConfig) -> "TradingAgentConfig":
+        return cls(
+            symbol=item.symbol,
+            current_qty=item.current_qty,
+            cost_price=item.cost_price,
+            lot_size=item.lot_size,
+            core_qty_target=item.core_qty_target,
+            trading_qty_target=item.trading_qty_target,
+            max_sell_qty_per_order=item.max_sell_qty_per_order,
+            max_rebuy_qty_per_order=item.max_rebuy_qty_per_order,
+            max_sell_total_position_ratio=item.max_sell_total_position_ratio,
+            max_round_trips=item.max_round_trips,
+            cost_reducer_rules=item.cost_reducer_rules,
+        )
 
 
 def build_inventory_for_existing_position(config: TradingAgentConfig) -> InventoryState:
+    if config.core_qty_target is not None and config.trading_qty_target is not None:
+        inventory = InventoryState(
+            core_qty_target=config.core_qty_target,
+            trading_qty_target=config.trading_qty_target,
+        )
+        inventory.seed_opening_inventory(anchor_price=config.cost_price)
+        return inventory
     lots = config.current_qty // config.lot_size
     trading_lots = max(lots // 2, 1)
     core_lots = lots - trading_lots
@@ -65,9 +102,19 @@ def build_inventory_for_existing_position(config: TradingAgentConfig) -> Invento
 
 
 def default_strategy(config: TradingAgentConfig) -> CostReducerStrategy:
+    symbol_rules = config.cost_reducer_rules
     rules = CostReducerRules(
+        lot_size=config.lot_size,
         max_round_trips=config.max_round_trips,
-        max_sell_total_position_ratio=Decimal(str((config.max_sell_qty_per_order or config.lot_size) / config.current_qty)),
+        max_sell_total_position_ratio=_decimal(config.max_sell_total_position_ratio),
+        max_sell_qty_per_order=config.max_sell_qty_per_order,
+        max_rebuy_qty_per_order=config.max_rebuy_qty_per_order,
+        overextension_vol_multiple=symbol_rules.overextension_vol_multiple if symbol_rules else Decimal("2.0"),
+        high_pullback_vol_multiple=symbol_rules.high_pullback_vol_multiple if symbol_rules else Decimal("0.5"),
+        rebuy_anchor_vol_band=symbol_rules.rebuy_anchor_vol_band if symbol_rules else Decimal("1.0"),
+        max_spread_bps=symbol_rules.max_spread_bps if symbol_rules else Decimal("20"),
+        estimated_roundtrip_cost_bps=symbol_rules.estimated_roundtrip_cost_bps if symbol_rules else Decimal("35"),
+        safety_buffer_bps=symbol_rules.safety_buffer_bps if symbol_rules else Decimal("20"),
     )
     policy = CostReducerExecutionPolicy(
         dry_run_only=True,
@@ -101,9 +148,9 @@ def run_replay(
             total_sell_intents += 1
         if intent.action is CostReducerAction.REBUY_TRADING:
             total_rebuy_intents += 1
-        _write_jsonl(log, {"event": "market_state", **market_state_to_jsonable(market)})
-        _write_jsonl(log, {"event": "strategy_signal", "symbol": config.symbol, **intent_to_jsonable(intent)})
-        if apply_paper_fills and intent.status is CostReducerExecutableStatus.BLOCKED and intent.limit_price is not None:
+        _write_jsonl(log, _market_state_row(market, mode="replay"))
+        _write_jsonl(log, _strategy_signal_row(config.symbol, market, intent, mode="replay"))
+        if apply_paper_fills and intent.status is CostReducerExecutableStatus.DRY_RUN_SIGNAL and intent.limit_price is not None:
             apply_dry_run_fill(
                 decision=_decision_from_intent(intent),
                 market=_adaptive_like(market),
@@ -131,13 +178,20 @@ def run_paper(*, replay_log_path: Path | str, ledger_path: Path | str, report_pa
     for row in _read_jsonl(replay_log_path):
         if row.get("event") != "strategy_signal":
             continue
+        if row.get("status") != CostReducerExecutableStatus.DRY_RUN_SIGNAL.value:
+            continue
         ledger.record_trade(
             symbol=str(row.get("symbol", "")),
             action=str(row.get("action", "")),
             quantity=int(row.get("quantity", 0) or 0),
             price=row.get("limit_price") or 0,
+            timestamp=str(row.get("timestamp") or ""),
             reason=str(row.get("reason", "")),
-            event_id=str(row.get("client_intent_id") or ""),
+            event_id=str(row.get("client_intent_id") or row.get("signal_id") or ""),
+            status=str(row.get("status") or ""),
+            expected_edge_bps=row.get("expected_edge_bps"),
+            estimated_cost_bps=row.get("estimated_cost_bps"),
+            cost_basis_before=(row.get("inventory_snapshot") or {}).get("economic_cost_basis") if isinstance(row.get("inventory_snapshot"), dict) else None,
         )
     summary = summarize_paper_ledger(ledger_path)
     if report_path is not None:
@@ -159,17 +213,89 @@ def run_monitor(
     inventory = build_inventory_for_existing_position(config)
     state = CostReducerState()
     strategy = default_strategy(config)
+    sentinel = BlackSwanSentinel()
     events: list[dict[str, object]] = []
     for index in range(iterations):
-        market = provider.read_once()
+        try:
+            market = provider.read_once(config.symbol)
+        except TypeError:
+            market = provider.read_once()
+        except Exception as exc:
+            risk_event = sentinel.provider_error(symbol=config.symbol, message=str(exc))
+            risk_events_to_jsonl([risk_event], monitor_log_path=log_path)
+            events.append(risk_event.to_jsonable())
+            if index < iterations - 1:
+                sleep(max(interval_seconds, 0.0))
+            continue
         intent = strategy.evaluate(market=market, inventory=inventory, state=state)
-        payload = {"event": "strategy_signal", "symbol": config.symbol, **intent_to_jsonable(intent)}
-        _write_jsonl(log_path, {"event": "market_state", **market_state_to_jsonable(market)})
+        payload = _strategy_signal_row(config.symbol, market, intent, mode="live-dry-run")
+        _write_jsonl(log_path, _market_state_row(market, mode="live-dry-run"))
         _write_jsonl(log_path, payload)
         events.append(payload)
         if index < iterations - 1:
             sleep(max(interval_seconds, 0.0))
     return events
+
+
+def run_watchlist_monitor(
+    *,
+    watchlist: WatchlistConfig,
+    provider,
+    log_path: Path | str,
+    iterations: int = 1,
+    interval_seconds: float = 1.0,
+    mode: str = "live-dry-run",
+    sleep=_sleep,
+) -> list[dict[str, object]]:
+    configs = {item.symbol: TradingAgentConfig.from_watch_symbol(item) for item in watchlist.enabled_symbols}
+    inventories = {symbol: build_inventory_for_existing_position(config) for symbol, config in configs.items()}
+    states = {symbol: CostReducerState() for symbol in configs}
+    strategies = {symbol: default_strategy(config) for symbol, config in configs.items()}
+    watch_items = {item.symbol: item for item in watchlist.enabled_symbols}
+    sentinel = BlackSwanSentinel()
+    rows: list[dict[str, object]] = []
+    for index in range(iterations):
+        for symbol, config in configs.items():
+            try:
+                market = provider.read_once(symbol)
+            except TypeError:
+                market = provider.read_once()
+            except Exception as exc:
+                risk_event = sentinel.provider_error(symbol=symbol, message=str(exc))
+                risk_events_to_jsonl([risk_event], monitor_log_path=log_path, mode=mode)
+                row = risk_event.to_jsonable(mode=mode)
+                rows.append(row)
+                continue
+
+            market_row = _market_state_row(market, mode=mode)
+            _write_jsonl(log_path, market_row)
+            rows.append(market_row)
+
+            risk_now = market.timestamp if market.source == "fake_live" else None
+            risk_events = sentinel.evaluate(market=market, config=watch_items[symbol], now=risk_now)
+            risk_events_to_jsonl(risk_events, monitor_log_path=log_path, mode=mode)
+            rows.extend(event.to_jsonable(mode=mode) for event in risk_events)
+
+            if should_pause_trading(risk_events):
+                intent = _risk_blocked_intent(
+                    strategy=strategies[symbol],
+                    market=market,
+                    inventory=inventories[symbol],
+                    state=states[symbol],
+                    reason="risk sentinel paused trading",
+                )
+            else:
+                intent = strategies[symbol].evaluate(
+                    market=market,
+                    inventory=inventories[symbol],
+                    state=states[symbol],
+                )
+            signal_row = _strategy_signal_row(config.symbol, market, intent, mode=mode)
+            _write_jsonl(log_path, signal_row)
+            rows.append(signal_row)
+        if index < iterations - 1:
+            sleep(max(interval_seconds, 0.0))
+    return rows
 
 
 def submit_auto_real_intent(
@@ -246,10 +372,34 @@ def intent_to_jsonable(intent: CostReducerExecutableIntent) -> dict[str, object]
         "limit_price": encode(intent.limit_price),
         "reason": intent.reason,
         "expected_edge_bps": encode(intent.expected_edge_bps),
+        "estimated_cost_bps": encode(intent.estimated_cost_bps),
+        "safety_buffer_bps": encode(intent.safety_buffer_bps),
         "status": intent.status.value,
+        "client_intent_id": intent.client_intent_id,
+        "signal_id": intent.signal_id,
         "market_snapshot": encode(intent.market_snapshot),
         "inventory_snapshot": encode(intent.inventory_snapshot),
     }
+
+
+def _risk_blocked_intent(
+    *,
+    strategy: CostReducerStrategy,
+    market: MarketState,
+    inventory: InventoryState,
+    state: CostReducerState,
+    reason: str,
+) -> CostReducerExecutableIntent:
+    return build_executable_intent(
+        decision=CostReducerDecision(CostReducerAction.BLOCK, reason=reason),
+        market=_adaptive_like(market),
+        inventory=inventory,
+        rules=strategy.rules,
+        policy=strategy.policy,
+        best_bid=market.best_bid,
+        best_ask=market.best_ask,
+        last_sell_price=state.last_sell_price,
+    )
 
 
 def _decision_from_intent(intent: CostReducerExecutableIntent):
@@ -283,6 +433,32 @@ def _write_jsonl(path: Path | str, row: dict[str, object]) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _market_state_row(market: MarketState, *, mode: str) -> dict[str, object]:
+    payload = market_state_to_jsonable(market)
+    return {
+        **payload,
+        "event": "market_state",
+        "symbol": market.symbol,
+        "timestamp": market.timestamp.isoformat(),
+        "mode": mode,
+        "source": market.source,
+        "payload": payload,
+    }
+
+
+def _strategy_signal_row(symbol: str, market: MarketState, intent: CostReducerExecutableIntent, *, mode: str) -> dict[str, object]:
+    payload = intent_to_jsonable(intent)
+    return {
+        "event": "strategy_signal",
+        "symbol": symbol,
+        "timestamp": market.timestamp.isoformat(),
+        "mode": mode,
+        "source": "cost_reducer",
+        **payload,
+        "payload": payload,
+    }
 
 
 def _read_jsonl(path: Path | str) -> list[dict[str, object]]:
