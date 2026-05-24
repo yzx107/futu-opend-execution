@@ -137,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_new.add_argument("--validation-start", default=None)
     evaluate_new.add_argument("--validation-end", default=None)
     evaluate_new.add_argument("--validation-days", type=int, default=3)
+    evaluate_new.add_argument("--min-validation-net-pnl", default="0")
+    evaluate_new.add_argument("--min-validation-round-trips", type=int, default=3)
+    evaluate_new.add_argument("--max-validation-open-quantity", type=int, default=0)
+    evaluate_new.add_argument("--max-quality-block-ratio", default="0.5")
+    evaluate_new.add_argument("--progress", action="store_true", help="Print symbol/date progress JSON to stderr")
     evaluate_new.add_argument("--report-json", default="reports/agent/newly_listed_walk_forward_summary.json")
     evaluate_new.add_argument("--report-md", default="reports/agent/newly_listed_walk_forward_rank.md")
     evaluate_new.add_argument("--overextension-grid", default=None)
@@ -378,13 +383,18 @@ def _cmd_evaluate_newly_listed(args) -> int:
         validation_start=args.validation_start,
         validation_end=args.validation_end,
         validation_days=args.validation_days,
+        min_validation_net_pnl=args.min_validation_net_pnl,
+        min_validation_round_trips=args.min_validation_round_trips,
+        max_validation_open_quantity=args.max_validation_open_quantity,
+        max_quality_block_ratio=args.max_quality_block_ratio,
+        progress=args.progress,
     )
     write_newly_listed_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
     print(
         json.dumps(
             {
                 key: summary[key]
-                for key in ("event", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")
+                for key in ("event", "decision", "candidate_count", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")
             },
             ensure_ascii=False,
         )

@@ -161,9 +161,46 @@ class NewlyListedWalkForwardTests(unittest.TestCase):
         self.assertEqual(summary["train_ranking"][0]["params"]["overextension_vol_multiple"], "2.0")
         self.assertEqual(summary["walk_forward_ranking"][0]["params"]["overextension_vol_multiple"], "1.5")
         self.assertEqual(summary["walk_forward_ranking"][0]["validation"]["score_sum"], "30")
+        self.assertEqual(summary["decision"], "NO_GO")
+        self.assertIn("round trips", summary["walk_forward_ranking"][0]["candidate_reasons"][0])
+
+    def test_walk_forward_summary_marks_candidate_only_after_validation_gates(self) -> None:
+        base = {
+            "listing_year": 2026,
+            "universe": {"candidate_count": 1},
+            "evaluated_case_count": 2,
+            "result_row_count": 4,
+            "failure_count": 0,
+            "failures": [],
+            "assumptions": {"position_model": "fixture"},
+            "per_case_results": [
+                _result("2026-05-20", "1.5", "10", "10", 1),
+                _result("2026-05-20", "2.0", "20", "20", 1),
+                _result("2026-05-22", "1.5", "30", "30", 0, round_trips=3, quality_blocks=5),
+                _result("2026-05-22", "2.0", "50", "-5", 0, round_trips=3),
+            ],
+        }
+
+        summary = build_walk_forward_summary(base, validation_days=1, top_n=2, max_quality_block_ratio="0.1")
+
+        self.assertEqual(summary["decision"], "CANDIDATE")
+        self.assertEqual(summary["candidate_count"], 1)
+        self.assertEqual(summary["recommended_candidate"]["params"]["overextension_vol_multiple"], "1.5")
+        self.assertEqual(summary["recommended_candidate"]["candidate_status"], "CANDIDATE")
+        self.assertEqual(summary["recommended_candidate"]["validation"]["quality_block_ratio"], "0.050000")
 
 
-def _result(date: str, overextension: str, score: str, net_pnl: str, open_quantity: int) -> dict[str, object]:
+def _result(
+    date: str,
+    overextension: str,
+    score: str,
+    net_pnl: str,
+    open_quantity: int,
+    *,
+    round_trips: int = 1,
+    quality_blocks: int = 0,
+    market_states: int = 100,
+) -> dict[str, object]:
     return {
         "symbol": "HK.01609",
         "date": date,
@@ -178,7 +215,7 @@ def _result(date: str, overextension: str, score: str, net_pnl: str, open_quanti
         },
         "sell_count": 1,
         "rebuy_count": 1,
-        "round_trips_completed": 1,
+        "round_trips_completed": round_trips,
         "open_quantity": open_quantity,
         "open_quantity_penalty": "0",
         "realized_net_pnl": net_pnl,
@@ -187,7 +224,8 @@ def _result(date: str, overextension: str, score: str, net_pnl: str, open_quanti
         "final_economic_cost_basis": "99",
         "cost_basis_reduction": "1",
         "risk_block_count": 0,
-        "quality_block_count": 0,
+        "quality_block_count": quality_blocks,
+        "market_state_count": market_states,
         "score": score,
     }
 

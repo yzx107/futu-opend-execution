@@ -124,6 +124,7 @@ def _evaluate_combo(
     open_quantity_penalty = Decimal(open_quantity) * Decimal("0.01")
     return {
         "params": _jsonable_params(overrides),
+        "market_state_count": len(market_states),
         "sell_count": sell_count,
         "rebuy_count": rebuy_count,
         "round_trips_completed": state.round_trips_completed,

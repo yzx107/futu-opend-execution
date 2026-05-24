@@ -8,6 +8,7 @@ from datetime import date
 from decimal import Decimal
 import json
 from pathlib import Path
+import sys
 from typing import Any, Iterable
 
 from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_reducer
@@ -134,6 +135,7 @@ def optimize_newly_listed(
     current_qty: int = 2,
     grid: CostReducerGrid = CostReducerGrid(),
     top_n: int = 20,
+    progress: bool = False,
 ) -> dict[str, Any]:
     universe = build_newly_listed_universe(
         instrument_profile_path=instrument_profile_path,
@@ -147,12 +149,21 @@ def optimize_newly_listed(
     )
     per_case: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
-    for candidate in universe["candidates"]:
+    for candidate_index, candidate in enumerate(universe["candidates"], start=1):
         symbol = str(candidate["symbol"])
         run_dates = list(candidate["available_trade_dates"])
         if max_dates_per_symbol is not None:
             run_dates = run_dates[-max_dates_per_symbol:]
-        for trade_date in run_dates:
+        for date_index, trade_date in enumerate(run_dates, start=1):
+            if progress:
+                _emit_progress(
+                    symbol=symbol,
+                    trade_date=trade_date,
+                    candidate_index=candidate_index,
+                    candidate_count=universe["candidate_count"],
+                    date_index=date_index,
+                    date_count=len(run_dates),
+                )
             try:
                 states = _market_states(symbol, trade_date, data_root, top_of_book_root)
                 if not states:
@@ -212,6 +223,11 @@ def evaluate_newly_listed(
     validation_start: str | None = None,
     validation_end: str | None = None,
     validation_days: int = 3,
+    min_validation_net_pnl: Decimal | str = Decimal("0"),
+    min_validation_round_trips: int = 3,
+    max_validation_open_quantity: int = 0,
+    max_quality_block_ratio: Decimal | str = Decimal("0.5"),
+    progress: bool = False,
 ) -> dict[str, Any]:
     base = optimize_newly_listed(
         instrument_profile_path=instrument_profile_path,
@@ -227,6 +243,7 @@ def evaluate_newly_listed(
         current_qty=current_qty,
         grid=grid,
         top_n=10_000,
+        progress=progress,
     )
     return build_walk_forward_summary(
         base,
@@ -235,6 +252,10 @@ def evaluate_newly_listed(
         validation_start=validation_start,
         validation_end=validation_end,
         validation_days=validation_days,
+        min_validation_net_pnl=min_validation_net_pnl,
+        min_validation_round_trips=min_validation_round_trips,
+        max_validation_open_quantity=max_validation_open_quantity,
+        max_quality_block_ratio=max_quality_block_ratio,
     )
 
 
@@ -246,6 +267,10 @@ def build_walk_forward_summary(
     validation_start: str | None = None,
     validation_end: str | None = None,
     validation_days: int = 3,
+    min_validation_net_pnl: Decimal | str = Decimal("0"),
+    min_validation_round_trips: int = 3,
+    max_validation_open_quantity: int = 0,
+    max_quality_block_ratio: Decimal | str = Decimal("0.5"),
 ) -> dict[str, Any]:
     rows = list(base.get("per_case_results", []))
     all_dates = sorted({str(row["date"]) for row in rows})
@@ -261,13 +286,31 @@ def build_walk_forward_summary(
     train_ranking = _aggregate_rankings(train_rows)
     validation_ranking = _aggregate_rankings(validation_rows)
     validation_by_key = {_params_key(row["params"]): row for row in validation_ranking}
+    thresholds = {
+        "min_validation_net_pnl": str(_decimal(min_validation_net_pnl)),
+        "min_validation_round_trips": int(min_validation_round_trips),
+        "max_validation_open_quantity": int(max_validation_open_quantity),
+        "max_quality_block_ratio": str(_decimal(max_quality_block_ratio)),
+    }
     walk_forward = []
     for rank, train in enumerate(train_ranking, start=1):
         validation = validation_by_key.get(_params_key(train["params"]), _empty_rollup(train["params"]))
-        walk_forward.append({"train_rank": rank, "params": train["params"], "train": train, "validation": validation})
+        candidate_reasons = _candidate_reasons(validation, thresholds)
+        walk_forward.append(
+            {
+                "train_rank": rank,
+                "params": train["params"],
+                "candidate_status": "CANDIDATE" if not candidate_reasons else "NO_GO",
+                "candidate_reasons": candidate_reasons,
+                "train": train,
+                "validation": validation,
+            }
+        )
     walk_forward.sort(key=_walk_forward_rank_key, reverse=True)
+    candidates = [row for row in walk_forward if row["candidate_status"] == "CANDIDATE"]
     return {
         "event": "newly_listed_walk_forward_summary",
+        "decision": "CANDIDATE" if candidates else "NO_GO",
         "listing_year": base["listing_year"],
         "universe": base["universe"],
         "split": {
@@ -279,6 +322,9 @@ def build_walk_forward_summary(
             "validation_end": validation_end,
             "validation_days": validation_days,
         },
+        "candidate_thresholds": thresholds,
+        "candidate_count": len(candidates),
+        "recommended_candidate": candidates[0] if candidates else None,
         "evaluated_case_count": base["evaluated_case_count"],
         "result_row_count": base["result_row_count"],
         "failure_count": base["failure_count"],
@@ -509,6 +555,7 @@ def _aggregate_rankings(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "open_quantity_penalty_sum": Decimal("0"),
                 "risk_block_count": 0,
                 "quality_block_count": 0,
+                "market_state_count": 0,
             },
         )
         bucket["cases"] += 1
@@ -523,7 +570,10 @@ def _aggregate_rankings(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         bucket["open_quantity_penalty_sum"] += _decimal(row.get("open_quantity_penalty", Decimal("0")))
         bucket["risk_block_count"] += int(row["risk_block_count"])
         bucket["quality_block_count"] += int(row["quality_block_count"])
+        bucket["market_state_count"] += int(row.get("market_state_count") or 0)
     ranked = list(buckets.values())
+    for item in ranked:
+        item["quality_block_ratio"] = _ratio(item["quality_block_count"], item["market_state_count"])
     ranked.sort(
         key=lambda item: (
             item["score_sum"],
@@ -578,19 +628,37 @@ def _empty_rollup(params: dict[str, Any]) -> dict[str, Any]:
             "open_quantity_penalty_sum": Decimal("0"),
             "risk_block_count": 0,
             "quality_block_count": 0,
+            "market_state_count": 0,
+            "quality_block_ratio": Decimal("0"),
         }
     )
 
 
-def _walk_forward_rank_key(row: dict[str, Any]) -> tuple[int, Decimal, Decimal, Decimal, Decimal]:
+def _candidate_reasons(validation: dict[str, Any], thresholds: dict[str, Any]) -> list[str]:
+    reasons = []
+    if int(validation["cases"]) <= 0:
+        reasons.append("validation cases unavailable")
+    if _decimal(validation["net_pnl_after_cost_sum"]) <= _decimal(thresholds["min_validation_net_pnl"]):
+        reasons.append("validation net_pnl_after_cost below threshold")
+    if int(validation["round_trips_completed"]) < int(thresholds["min_validation_round_trips"]):
+        reasons.append("validation completed round trips below threshold")
+    if int(validation["open_quantity_sum"]) > int(thresholds["max_validation_open_quantity"]):
+        reasons.append("validation open quantity above threshold")
+    if _decimal(validation["quality_block_ratio"]) > _decimal(thresholds["max_quality_block_ratio"]):
+        reasons.append("validation quality block ratio above threshold")
+    return reasons
+
+
+def _walk_forward_rank_key(row: dict[str, Any]) -> tuple[int, Decimal, int, Decimal, Decimal, Decimal]:
     validation = row["validation"]
     train = row["train"]
     return (
-        1 if int(validation["cases"]) > 0 else 0,
-        _decimal(validation["score_sum"]),
+        1 if row["candidate_status"] == "CANDIDATE" else 0,
         _decimal(validation["net_pnl_after_cost_sum"]),
+        int(validation["round_trips_completed"]),
         -_decimal(validation["open_quantity_sum"]),
-        _decimal(train["score_sum"]),
+        -_decimal(validation["quality_block_ratio"]),
+        _decimal(train["net_pnl_after_cost_sum"]),
     )
 
 
@@ -627,23 +695,26 @@ def _markdown(summary: dict[str, Any]) -> str:
         lines = [
             "# Newly Listed Walk-Forward Evaluation",
             "",
+            f"- decision: {summary['decision']}",
+            f"- candidate_count: {summary['candidate_count']}",
             f"- listing_year: {summary['listing_year']}",
             f"- universe_count: {summary['universe']['candidate_count']}",
             f"- evaluated_case_count: {summary['evaluated_case_count']}",
             f"- train_dates: {len(split['train_dates'])}",
             f"- validation_dates: {len(split['validation_dates'])}",
             f"- failure_count: {summary['failure_count']}",
+            f"- candidate_thresholds: `{summary['candidate_thresholds']}`",
             "",
             "## Walk-Forward Ranking",
             "",
-            "| rank | train_rank | validation_score | validation_cases | validation_net_pnl | validation_open_qty | train_score | params |",
-            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+            "| rank | status | train_rank | validation_net_pnl | round_trips | open_qty | quality_block_ratio | reasons | params |",
+            "| ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
         ]
         for index, row in enumerate(summary["walk_forward_ranking"], start=1):
             validation = row["validation"]
-            train = row["train"]
+            reasons = "; ".join(row["candidate_reasons"]) or "passed"
             lines.append(
-                f"| {index} | {row['train_rank']} | {validation['score_sum']} | {validation['cases']} | {validation['net_pnl_after_cost_sum']} | {validation['open_quantity_sum']} | {train['score_sum']} | `{row['params']}` |"
+                f"| {index} | {row['candidate_status']} | {row['train_rank']} | {validation['net_pnl_after_cost_sum']} | {validation['round_trips_completed']} | {validation['open_quantity_sum']} | {validation['quality_block_ratio']} | {reasons} | `{row['params']}` |"
             )
         lines.extend(
             [
@@ -697,6 +768,40 @@ def _date_str(value: Any) -> str | None:
 
 def _list_len(value: Any) -> int:
     return len(value) if isinstance(value, (list, tuple)) else 0
+
+
+def _ratio(numerator: Any, denominator: Any) -> Decimal:
+    bottom = _decimal(denominator)
+    if bottom <= 0:
+        return Decimal("0")
+    return (_decimal(numerator) / bottom).quantize(Decimal("0.000001"))
+
+
+def _emit_progress(
+    *,
+    symbol: str,
+    trade_date: str,
+    candidate_index: int,
+    candidate_count: int,
+    date_index: int,
+    date_count: int,
+) -> None:
+    print(
+        json.dumps(
+            {
+                "event": "newly_listed_progress",
+                "symbol": symbol,
+                "date": trade_date,
+                "candidate_index": candidate_index,
+                "candidate_count": candidate_count,
+                "date_index": date_index,
+                "date_count": date_count,
+            },
+            ensure_ascii=False,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
 
 
 def _decimal(value: Any) -> Decimal:

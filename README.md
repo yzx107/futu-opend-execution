@@ -128,11 +128,15 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main evaluate-newly-listed \
   --rebuy-anchor-grid 0.5,1.0 \
   --safety-buffer-grid 20,30 \
   --max-sell-ratio-grid 0.25,0.5 \
+  --min-validation-round-trips 3 \
+  --max-validation-open-quantity 0 \
+  --max-quality-block-ratio 0.5 \
+  --progress \
   --report-json reports/agent/newly_listed_walk_forward_summary.json \
   --report-md reports/agent/newly_listed_walk_forward_rank.md
 ```
 
-The walk-forward report ranks train-selected parameters by validation-period evidence. Treat it as a filter against obvious overfitting, not a guarantee that the parameter set has future edge.
+The walk-forward report ranks train-selected parameters by validation-period evidence. A row is marked `CANDIDATE` only if validation `net_pnl_after_cost` is positive, completed round trips meet the configured floor, open quantity is not above the configured cap, and quality-block ratio is below the configured ceiling. Otherwise the report is an explicit `NO_GO`. Treat this as a filter against obvious overfitting, not a guarantee that the parameter set has future edge.
 
 Run live dry-run monitor from watchlist:
 
