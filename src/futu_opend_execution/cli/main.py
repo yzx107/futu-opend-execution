@@ -15,6 +15,11 @@ from futu_opend_execution.agent.approval import (
     draft_approval_from_strategy_signal,
     load_approval_file,
 )
+from futu_opend_execution.agent.feature_labels import (
+    FeatureLabelRules,
+    evaluate_newly_listed_feature_labels,
+    write_feature_label_reports,
+)
 from futu_opend_execution.agent.newly_listed import (
     build_newly_listed_universe,
     evaluate_newly_listed,
@@ -185,6 +190,30 @@ def build_parser() -> argparse.ArgumentParser:
     reversion.add_argument("--report-json", default="reports/agent/sell_rebuy_walk_forward_summary.json")
     reversion.add_argument("--report-md", default="reports/agent/sell_rebuy_walk_forward_rank.md")
 
+    labels = sub.add_parser("feature-label-newly-listed", help="Build microstructure features and future edge labels for newly listed HK names")
+    labels.add_argument("--listing-year", type=int, default=2026)
+    labels.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    labels.add_argument("--universe-path", default=None)
+    labels.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    labels.add_argument("--top-of-book-root", default=None)
+    labels.add_argument("--date", action="append", dest="dates")
+    labels.add_argument("--min-trade-dates", type=int, default=1)
+    labels.add_argument("--max-symbols", type=int, default=20)
+    labels.add_argument("--max-dates-per-symbol", type=int, default=5)
+    labels.add_argument("--horizons-seconds", default="30,60,300")
+    labels.add_argument("--cost-bps", default="35")
+    labels.add_argument("--min-edge-bps", default="0")
+    labels.add_argument("--min-group-count", type=int, default=30)
+    labels.add_argument("--min-group-symbols", type=int, default=2)
+    labels.add_argument("--min-hit-rate", default="0.55")
+    labels.add_argument("--min-avg-edge-bps", default="0")
+    labels.add_argument("--max-rows-per-case", type=int, default=None)
+    labels.add_argument("--top-n", type=int, default=20)
+    labels.add_argument("--progress", action="store_true")
+    labels.add_argument("--report-json", default="reports/agent/feature_label_summary.json")
+    labels.add_argument("--report-md", default="reports/agent/feature_label_rank.md")
+    labels.add_argument("--rows-jsonl", default=None)
+
     paper = sub.add_parser("paper", help="Build paper ledger/report from replay JSONL")
     paper.add_argument("replay_log")
     paper.add_argument("--ledger-path", default="logs/agent/paper_ledger.jsonl")
@@ -299,6 +328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_evaluate_newly_listed(args)
     if args.command == "evaluate-sell-rebuy-newly-listed":
         return _cmd_evaluate_sell_rebuy_newly_listed(args)
+    if args.command == "feature-label-newly-listed":
+        return _cmd_feature_label_newly_listed(args)
     if args.command == "paper":
         print(json.dumps(run_paper(replay_log_path=args.replay_log, ledger_path=args.ledger_path, report_path=args.report_path), ensure_ascii=False))
         return 0
@@ -467,6 +498,40 @@ def _cmd_evaluate_sell_rebuy_newly_listed(args) -> int:
             {
                 key: summary[key]
                 for key in ("event", "decision", "candidate_count", "evaluated_case_count", "result_row_count", "failure_count")
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _cmd_feature_label_newly_listed(args) -> int:
+    summary = evaluate_newly_listed_feature_labels(
+        instrument_profile_path=args.instrument_profile,
+        universe_path=args.universe_path,
+        data_root=args.data_root,
+        top_of_book_root=args.top_of_book_root,
+        listing_year=args.listing_year,
+        dates=args.dates,
+        min_trade_dates=args.min_trade_dates,
+        max_symbols=args.max_symbols,
+        max_dates_per_symbol=args.max_dates_per_symbol,
+        rules=_feature_label_rules_from_args(args),
+        top_n=args.top_n,
+        keep_rows=bool(args.rows_jsonl),
+        progress=args.progress,
+    )
+    write_feature_label_reports(
+        summary,
+        json_path=args.report_json,
+        markdown_path=args.report_md,
+        rows_jsonl_path=args.rows_jsonl,
+    )
+    print(
+        json.dumps(
+            {
+                key: summary[key]
+                for key in ("event", "decision", "candidate_count", "evaluated_case_count", "feature_row_count", "failure_count")
             },
             ensure_ascii=False,
         )
@@ -765,6 +830,19 @@ def _sell_rebuy_grid_from_args(args) -> SellRebuyGrid:
         stop_vol_multiple=_decimal_tuple(args.stop_grid, default_grid.stop_vol_multiple),
         max_hold_states=_int_tuple(args.max_hold_grid, default_grid.max_hold_states),
         cost_bps=_decimal_tuple(args.cost_bps_grid, default_grid.cost_bps),
+    )
+
+
+def _feature_label_rules_from_args(args) -> FeatureLabelRules:
+    return FeatureLabelRules(
+        horizons_seconds=_int_tuple(args.horizons_seconds, (30, 60, 300)),
+        cost_bps=Decimal(str(args.cost_bps)),
+        min_edge_bps=Decimal(str(args.min_edge_bps)),
+        min_group_count=args.min_group_count,
+        min_group_symbols=args.min_group_symbols,
+        min_hit_rate=Decimal(str(args.min_hit_rate)),
+        min_avg_edge_bps=Decimal(str(args.min_avg_edge_bps)),
+        max_rows_per_case=args.max_rows_per_case,
     )
 
 

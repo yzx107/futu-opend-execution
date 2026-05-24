@@ -70,6 +70,17 @@ class AgentRuntimeTests(unittest.TestCase):
             "60,300",
             "--progress",
         ])
+        labels = parser.parse_args([
+            "feature-label-newly-listed",
+            "--listing-year",
+            "2026",
+            "--horizons-seconds",
+            "30,300",
+            "--min-group-count",
+            "10",
+            "--rows-jsonl",
+            "/tmp/rows.jsonl",
+        ])
         futures = parser.parse_args(["futures", "contracts", "--config", "configs/futures_contracts.example.json"])
         futures_info = parser.parse_args(["futures", "opend-info", "HK.HSI2606", "--check-trade-context"])
         futures_replay = parser.parse_args(["futures", "replay", "HK.HSI2606", "--fixture"])
@@ -90,6 +101,10 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(reversion.command, "evaluate-sell-rebuy-newly-listed")
         self.assertEqual(reversion.direction_grid, "BUY_SELL")
         self.assertEqual(reversion.max_hold_grid, "60,300")
+        self.assertEqual(labels.command, "feature-label-newly-listed")
+        self.assertEqual(labels.horizons_seconds, "30,300")
+        self.assertEqual(labels.min_group_count, 10)
+        self.assertEqual(labels.rows_jsonl, "/tmp/rows.jsonl")
         self.assertEqual(futures.command, "futures")
         self.assertEqual(futures.futures_command, "contracts")
         self.assertEqual(futures_info.futures_command, "opend-info")

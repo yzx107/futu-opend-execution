@@ -164,6 +164,29 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main evaluate-sell-rebuy-newly
 
 `SELL_REBUY` models existing-inventory high sell then low rebuy. `BUY_SELL` models buy-dip then sell-rebound research, but it is paper/replay only and is not eligible for the guarded real-order path. A `CANDIDATE` must pass both train-period and validation-period gates for net PnL after cost, completed round trips, forced exits, and top-of-book quality. Relaxing `--max-quality-block-ratio` is useful for research triage, but high quality-block ratios mean the result is not execution-grade.
 
+Build second-level microstructure features and future edge labels before writing a strategy rule:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main feature-label-newly-listed \
+  --listing-year 2026 \
+  --universe-path /Volumes/Data/港股Tick数据/reference/newly_listed_hk/year=2026/newly_listed_hk_2026.parquet \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
+  --max-symbols 20 \
+  --max-dates-per-symbol 5 \
+  --horizons-seconds 30,60,300 \
+  --cost-bps 35 \
+  --min-group-count 30 \
+  --min-group-symbols 2 \
+  --min-hit-rate 0.55 \
+  --max-rows-per-case 5000 \
+  --progress \
+  --report-json reports/agent/feature_label_summary.json \
+  --report-md reports/agent/feature_label_rank.md \
+  --rows-jsonl reports/agent/feature_label_rows.jsonl
+```
+
+The feature-label harness emits per-state features such as price-vs-VWAP z-score, spread bucket, orderbook imbalance, pullback distance from rolling high/low, volume/turnover deltas, and Hshare replay quality flags. Labels are future replay edges: `SELL_REBUY` assumes selling existing inventory at the current best bid and rebuying at a future best ask; `BUY_SELL` assumes buying at the current best ask and selling at a future best bid. The report groups states by feature buckets and marks `CANDIDATE` only when count, symbol coverage, hit rate, average edge after cost, and quality gates pass. This is the bridge from mechanical parameter grids toward state-conditioned strategy design; it is still replay/paper research.
+
 Run live dry-run monitor from watchlist:
 
 ```bash
