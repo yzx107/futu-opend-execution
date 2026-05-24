@@ -23,8 +23,10 @@ from futu_opend_execution.agent.newly_listed import (
 from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_reducer, write_optimizer_reports
 from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
+from futu_opend_execution.agent.futures_runtime import FuturesReplayConfig, run_futures_replay
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
 from futu_opend_execution.contracts import ContractSpecError, load_contract_specs
+from futu_opend_execution.data.futures_csv import FuturesCsvReplayProvider
 from futu_opend_execution.data.hshare_l2 import DEFAULT_HSHARE_L2_ROOT, HshareL2ReplayProvider
 from futu_opend_execution.data.hshare_top_of_book import HshareTopOfBookReplayProvider
 from futu_opend_execution.data.market import MarketEvent
@@ -36,6 +38,7 @@ from futu_opend_execution.execution.futu_futures import FutuOpenDFuturesClient
 from futu_opend_execution.ledger.futures import FuturesLedgerError, FuturesPaperLedger, summarize_futures_paper_ledger
 from futu_opend_execution.models import BrokerOrderSnapshot, BrokerOrderStatus, TradeMode
 from futu_opend_execution.risk import ExecutionValidationError
+from futu_opend_execution.strategies.futures_mean_reversion import FuturesMeanReversionRules
 from futu_opend_execution.strategy_config import CostReducerRuntimeParams, config_to_jsonable
 from futu_opend_execution.watchlist import WatchlistConfigError, load_watchlist_config
 
@@ -128,6 +131,23 @@ def build_parser() -> argparse.ArgumentParser:
     futures_info.add_argument("--check-trade-context", action="store_true", help="Open and close OpenFutureTradeContext without placing orders")
     futures_info.add_argument("--margin-rate", default="0")
     futures_info.add_argument("--commission-per-contract", default="0")
+    futures_replay = futures_sub.add_parser("replay", help="Run futures replay through paper mean-reversion strategy")
+    futures_replay.add_argument("symbol")
+    futures_replay.add_argument("--contracts-config", default="configs/futures_contracts.example.json")
+    futures_replay.add_argument("--csv", default=None, help="CSV with timestamp, price, volume, bid/ask columns")
+    futures_replay.add_argument("--fixture", action="store_true")
+    futures_replay.add_argument("--interval-seconds", type=int, default=1)
+    futures_replay.add_argument("--limit-rows", type=int, default=None)
+    futures_replay.add_argument("--ledger-path", default="logs/agent/futures_replay_ledger.jsonl")
+    futures_replay.add_argument("--log-path", default="logs/agent/futures_replay.jsonl")
+    futures_replay.add_argument("--quantity", type=int, default=1)
+    futures_replay.add_argument("--entry-vol-multiple", default="1.0")
+    futures_replay.add_argument("--exit-vol-band", default="0.2")
+    futures_replay.add_argument("--max-spread-bps", default="10")
+    futures_replay.add_argument("--min-ticks-to-activate", type=int, default=5)
+    futures_replay.add_argument("--max-contracts", type=int, default=1)
+    futures_replay.add_argument("--max-daily-loss", default="0")
+    futures_replay.add_argument("--max-margin-used", default="0")
     futures_fill = futures_sub.add_parser("paper-fill", help="Append one futures paper fill")
     futures_fill.add_argument("symbol")
     futures_fill.add_argument("action", choices=["BUY_OPEN", "SELL_OPEN", "SELL_CLOSE", "BUY_CLOSE"])
@@ -346,6 +366,27 @@ def _cmd_futures(args) -> int:
             print(json.dumps(payload, ensure_ascii=False))
             return 0
         contracts = load_contract_specs(args.contracts_config)
+        if args.futures_command == "replay":
+            contract = _contract_for_symbol(contracts, args.symbol)
+            provider = _futures_replay_provider_from_args(args)
+            rules = FuturesMeanReversionRules(
+                quantity=args.quantity,
+                entry_vol_multiple=args.entry_vol_multiple,
+                exit_vol_band=args.exit_vol_band,
+                max_spread_bps=args.max_spread_bps,
+                min_ticks_to_activate=args.min_ticks_to_activate,
+                max_contracts=args.max_contracts,
+                max_daily_loss=args.max_daily_loss,
+                max_margin_used=args.max_margin_used,
+            )
+            summary = run_futures_replay(
+                config=FuturesReplayConfig(contract=contract, rules=rules),
+                market_states=provider.iter_market_states(),
+                log_path=args.log_path,
+                ledger_path=args.ledger_path,
+            )
+            print(json.dumps(summary, ensure_ascii=False))
+            return 0
         if args.futures_command == "paper-fill":
             ledger = FuturesPaperLedger(args.ledger_path, contracts=contracts)
             row = ledger.record_fill(
@@ -579,9 +620,52 @@ def _parse_marks(values: Sequence[str]) -> dict[str, Decimal]:
     return marks
 
 
+def _contract_for_symbol(contracts, symbol: str):
+    normalized = symbol.strip().upper()
+    if "." not in normalized:
+        normalized = f"HK.{normalized}"
+    try:
+        return contracts[normalized]
+    except KeyError as exc:
+        raise FuturesLedgerError(f"unknown futures contract: {normalized}") from exc
+
+
+def _futures_replay_provider_from_args(args):
+    if args.fixture:
+        return FuturesCsvReplayProvider.from_events(_futures_fixture_events(args.symbol), interval_seconds=args.interval_seconds)
+    if not args.csv:
+        raise FuturesLedgerError("futures replay requires --csv or --fixture")
+    return FuturesCsvReplayProvider(path=args.csv, symbol=args.symbol, interval_seconds=args.interval_seconds, limit_rows=args.limit_rows)
+
+
 def _is_cli_index_future(value: str) -> bool:
     normalized = value.strip().upper()
     return "股指" in value or "INDEX" in normalized
+
+
+def _futures_fixture_events(symbol: str) -> list[MarketEvent]:
+    normalized = symbol.strip().upper()
+    if "." not in normalized:
+        normalized = f"HK.{normalized}"
+    start = datetime(2026, 5, 21, 9, 15)
+    events: list[MarketEvent] = []
+    prices = [20000] * 8 + [19960, 19970, 19985, 20000, 20005]
+    for offset, price in enumerate(prices):
+        ts = start + timedelta(seconds=offset)
+        events.append(MarketEvent(symbol=normalized, timestamp=ts, event_type="trade", price=price, volume=1))
+        events.append(
+            MarketEvent(
+                symbol=normalized,
+                timestamp=ts,
+                event_type="book",
+                bid_price=Decimal(str(price)) - Decimal("1"),
+                bid_size=10,
+                ask_price=price,
+                ask_size=10,
+                book_quality="OK",
+            )
+        )
+    return events
 
 
 def _fixture_events(symbol: str) -> list[MarketEvent]:

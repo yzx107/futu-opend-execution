@@ -181,6 +181,29 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main futures paper-summary \
   --mark HK.HSI2606=20010
 ```
 
+Run the first futures replay/paper strategy harness:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures replay HK.HSI2606 \
+  --fixture \
+  --contracts-config configs/futures_contracts.example.json \
+  --log-path logs/agent/futures_replay.jsonl \
+  --ledger-path logs/agent/futures_replay_ledger.jsonl
+```
+
+For CSV handoffs, provide rows with at least `timestamp`, `price`, `volume`, and preferably `bid_price`, `bid_size`, `ask_price`, `ask_size`:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures replay HK.HSI2606 \
+  --csv data/futures_hsi2606_sample.csv \
+  --contracts-config configs/futures_contracts.example.json \
+  --max-contracts 1 \
+  --max-daily-loss 1000 \
+  --max-margin-used 100000
+```
+
+The first futures strategy is intentionally simple: VWAP-deviation mean reversion with `BUY_OPEN`, `SELL_OPEN`, `SELL_CLOSE`, `BUY_CLOSE`, and `WAIT`. It blocks stale/missing book data, wide spread, max contracts, daily loss, and max margin. It is a harness for replay/paper validation, not a live trading recommendation.
+
 The futures foundation validates tick alignment, multiplier, min order size, commission, FIFO close PnL, open margin, and mark-to-market. It does not place futures orders, model exchange-specific tick ladders, handle rollover automatically, or validate live OpenD futures order behavior.
 
 ## Manual Real-Order Approval

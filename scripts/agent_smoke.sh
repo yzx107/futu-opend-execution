@@ -13,6 +13,8 @@ rm -f \
   "${ROOT}/logs/agent/smoke_replay.jsonl" \
   "${ROOT}/logs/agent/smoke_paper_ledger.jsonl" \
   "${ROOT}/logs/agent/smoke_monitor.jsonl" \
+  "${ROOT}/logs/agent/smoke_futures_replay.jsonl" \
+  "${ROOT}/logs/agent/smoke_futures_ledger.jsonl" \
   "${ROOT}/reports/agent/smoke_paper_summary.json" \
   "${ROOT}/reports/agent/smoke_optimizer_summary.json" \
   "${ROOT}/reports/agent/smoke_optimizer_rank.md"
@@ -43,6 +45,11 @@ rm -f \
   --max-sell-ratio-grid 0.5 \
   --report-json "${ROOT}/reports/agent/smoke_optimizer_summary.json" \
   --report-md "${ROOT}/reports/agent/smoke_optimizer_rank.md"
+"${PY}" -m futu_opend_execution.cli.main futures replay HK.HSI2606 \
+  --fixture \
+  --contracts-config "${ROOT}/configs/futures_contracts.example.json" \
+  --log-path "${ROOT}/logs/agent/smoke_futures_replay.jsonl" \
+  --ledger-path "${ROOT}/logs/agent/smoke_futures_ledger.jsonl"
 "${PY}" -m futu_opend_execution.cli.main monitor HK.00700 \
   --current-qty 200 \
   --cost-price 100 \

@@ -36,4 +36,4 @@ Order execution is limit-only and polls broker order status after submission. On
 
 Paper and dry-run outputs are not promises of real fillability, slippage, liquidity, profitability, or final OpenD execution state. This PR is stacked on PR1 and depends on PR1's dry-run / risk / signal semantics while intentionally using dict snapshots to avoid duplicating PR1 models.
 
-Futures support is research/paper-only. The CLI can validate local futures contract specs, append futures paper fills, summarize margin/PnL, and read OpenD futures contract metadata. It does not unlock futures trading, submit futures orders, or expose an approval path for futures real execution.
+Futures support is research/paper-only. The CLI can validate local futures contract specs, append futures paper fills, summarize margin/PnL, read OpenD futures contract metadata, and run CSV/fixture replay through a paper strategy harness. It does not unlock futures trading, submit futures orders, or expose an approval path for futures real execution.

@@ -46,6 +46,7 @@ class AgentRuntimeTests(unittest.TestCase):
         optimize_new = parser.parse_args(["optimize-newly-listed", "--listing-year", "2026", "--max-symbols", "1"])
         futures = parser.parse_args(["futures", "contracts", "--config", "configs/futures_contracts.example.json"])
         futures_info = parser.parse_args(["futures", "opend-info", "HK.HSI2606", "--check-trade-context"])
+        futures_replay = parser.parse_args(["futures", "replay", "HK.HSI2606", "--fixture"])
 
         self.assertEqual(replay.command, "replay")
         self.assertEqual(replay.top_of_book_root, "/tmp/top")
@@ -57,6 +58,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(futures.command, "futures")
         self.assertEqual(futures.futures_command, "contracts")
         self.assertEqual(futures_info.futures_command, "opend-info")
+        self.assertEqual(futures_replay.futures_command, "replay")
 
     def test_replay_emits_summary_and_paper_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
