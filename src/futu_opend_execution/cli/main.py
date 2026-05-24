@@ -124,6 +124,7 @@ def build_parser() -> argparse.ArgumentParser:
     optimize_new.add_argument("--safety-buffer-grid", default=None)
     optimize_new.add_argument("--max-sell-ratio-grid", default=None)
     optimize_new.add_argument("--max-round-trips-grid", default=None)
+    optimize_new.add_argument("--progress", action="store_true", help="Print symbol/date progress JSON to stderr")
 
     evaluate_new = sub.add_parser("evaluate-newly-listed", help="Walk-forward evaluate newly listed HK cost-reducer parameters")
     evaluate_new.add_argument("--listing-year", type=int, default=2026)
@@ -393,6 +394,7 @@ def _cmd_optimize_newly_listed(args) -> int:
         current_qty=args.current_qty,
         grid=grid,
         top_n=args.top_n,
+        progress=args.progress,
     )
     write_newly_listed_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
     print(json.dumps({key: summary[key] for key in ("event", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")}, ensure_ascii=False))

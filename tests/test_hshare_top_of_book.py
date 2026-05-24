@@ -137,13 +137,11 @@ class HshareTopOfBookReplayTests(unittest.TestCase):
             )
             states = list(provider.iter_market_states())
 
-            self.assertEqual(len(states), 2)
+            self.assertEqual(len(states), 1)
             self.assertEqual(states[0].book_quality, "OK")
             self.assertFalse(states[0].book_depth_limited)
             self.assertEqual(states[0].bid_size, Decimal("200"))
             self.assertEqual(states[0].ask_size, Decimal("300"))
-            self.assertEqual(states[1].book_quality, "BLOCKED")
-            self.assertTrue(states[1].orderbook_limited)
 
 
 if __name__ == "__main__":

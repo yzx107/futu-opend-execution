@@ -45,10 +45,12 @@ class HshareTopOfBookReplayProvider:
                     yield from _row_events(row, symbol=symbol, require_quality=self.require_quality)
 
     def iter_market_states(self) -> Iterable[MarketState]:
+        events_by_symbol: dict[str, list[MarketEvent]] = {symbol: [] for symbol in self.symbols}
+        for event in self.iter_events():
+            events_by_symbol.setdefault(event.symbol, []).append(event)
         for symbol in self.symbols:
-            events = [event for event in self.iter_events() if event.symbol == symbol]
             yield from build_market_states(
-                events,
+                events_by_symbol.get(symbol, []),
                 interval_seconds=self.interval_seconds,
                 source="hshare_top_of_book",
             )
@@ -64,7 +66,7 @@ class HshareTopOfBookReplayProvider:
         )
         rows: list[dict[str, Any]] = []
         for path in sorted(partition.glob("*.parquet")):
-            rows.extend(_read_parquet_rows(path, limit_rows=self.limit_rows))
+            rows.extend(_read_parquet_rows(path, limit_rows=self.limit_rows, require_quality=self.require_quality))
         return rows
 
 
@@ -75,6 +77,10 @@ def _row_events(
     require_quality: bool,
 ) -> list[MarketEvent]:
     timestamp = _row_time(row)
+    quality_ok = _quality_ok(row)
+    if require_quality and not quality_ok and "StrategyHandoffEligibleFlag" in row:
+        return []
+
     output = [
         MarketEvent(
             symbol=symbol,
@@ -85,7 +91,6 @@ def _row_events(
         )
     ]
 
-    quality_ok = _quality_ok(row)
     if require_quality and not quality_ok:
         output.append(
             MarketEvent(
@@ -172,13 +177,16 @@ def resolve_top_of_book_root(root: Path | str) -> Path:
     return _namespace_root(Path(root))
 
 
-def _read_parquet_rows(path: Path, *, limit_rows: int | None) -> list[dict[str, Any]]:
+def _read_parquet_rows(path: Path, *, limit_rows: int | None, require_quality: bool) -> list[dict[str, Any]]:
     try:
         import polars as pl  # type: ignore
     except Exception:
         pl = None
     if pl is not None:
         frame = pl.scan_parquet(str(path))
+        schema_names = set(frame.collect_schema().names())
+        if require_quality and "StrategyHandoffEligibleFlag" in schema_names:
+            frame = _filter_polars_strategy_handoff_eligible(frame, schema_names=schema_names, pl=pl)
         if limit_rows is not None:
             frame = frame.limit(limit_rows)
         return frame.collect().to_dicts()
@@ -188,9 +196,90 @@ def _read_parquet_rows(path: Path, *, limit_rows: int | None) -> list[dict[str, 
     except Exception as exc:  # pragma: no cover
         raise RuntimeError("Reading Hshare top-of-book parquet requires polars or pandas+pyarrow") from exc
     frame = pd.read_parquet(path)
+    if require_quality and "StrategyHandoffEligibleFlag" in frame.columns:
+        frame = _filter_pandas_strategy_handoff_eligible(frame)
     if limit_rows is not None:
         frame = frame.head(limit_rows)
     return frame.to_dict("records")
+
+
+def _filter_polars_strategy_handoff_eligible(frame: Any, *, schema_names: set[str], pl: Any) -> Any:
+    bid_size_col = _first_schema_name(schema_names, ("BidSizeReplay", "BestBidSizeReplay", "bid_size", "BidSize"))
+    ask_size_col = _first_schema_name(schema_names, ("AskSizeReplay", "BestAskSizeReplay", "ask_size", "AskSize"))
+    required = {
+        "StrategyHandoffEligibleFlag",
+        "TopOfBookValidFlag",
+        "ReplayQualityScore",
+        "CrossedWindowFlag",
+        "ReplayResidueFlag",
+        "ReplayWindowExcludedFlag",
+        "SameMillisecondBatchRiskFlag",
+        "BestBidReplay",
+        "BestAskReplay",
+    }
+    if bid_size_col is None or ask_size_col is None or not required.issubset(schema_names):
+        return frame.limit(0)
+    bid = pl.col("BestBidReplay").cast(pl.Float64, strict=False)
+    ask = pl.col("BestAskReplay").cast(pl.Float64, strict=False)
+    bid_size = pl.col(bid_size_col).cast(pl.Float64, strict=False)
+    ask_size = pl.col(ask_size_col).cast(pl.Float64, strict=False)
+    return frame.filter(
+        _polars_bool_col(pl, "StrategyHandoffEligibleFlag")
+        & _polars_bool_col(pl, "TopOfBookValidFlag")
+        & (pl.col("ReplayQualityScore").cast(pl.Float64, strict=False) == 1.0)
+        & ~_polars_bool_col(pl, "CrossedWindowFlag")
+        & ~_polars_bool_col(pl, "ReplayResidueFlag")
+        & ~_polars_bool_col(pl, "ReplayWindowExcludedFlag")
+        & ~_polars_bool_col(pl, "SameMillisecondBatchRiskFlag")
+        & (bid > 0)
+        & (ask > 0)
+        & (ask >= bid)
+        & (bid_size > 0)
+        & (ask_size > 0)
+    )
+
+
+def _filter_pandas_strategy_handoff_eligible(frame: Any) -> Any:
+    bid_size_col = _first_schema_name(set(frame.columns), ("BidSizeReplay", "BestBidSizeReplay", "bid_size", "BidSize"))
+    ask_size_col = _first_schema_name(set(frame.columns), ("AskSizeReplay", "BestAskSizeReplay", "ask_size", "AskSize"))
+    required = {
+        "StrategyHandoffEligibleFlag",
+        "TopOfBookValidFlag",
+        "ReplayQualityScore",
+        "CrossedWindowFlag",
+        "ReplayResidueFlag",
+        "ReplayWindowExcludedFlag",
+        "SameMillisecondBatchRiskFlag",
+        "BestBidReplay",
+        "BestAskReplay",
+    }
+    if bid_size_col is None or ask_size_col is None or not required.issubset(set(frame.columns)):
+        return frame.iloc[0:0]
+    import pandas as pd  # type: ignore
+
+    bid = pd.to_numeric(frame["BestBidReplay"], errors="coerce")
+    ask = pd.to_numeric(frame["BestAskReplay"], errors="coerce")
+    bid_size = pd.to_numeric(frame[bid_size_col], errors="coerce")
+    ask_size = pd.to_numeric(frame[ask_size_col], errors="coerce")
+    mask = (
+        frame["StrategyHandoffEligibleFlag"].fillna(False).eq(True)
+        & frame["TopOfBookValidFlag"].fillna(False).eq(True)
+        & (pd.to_numeric(frame["ReplayQualityScore"], errors="coerce") == 1.0)
+        & frame["CrossedWindowFlag"].fillna(False).eq(False)
+        & frame["ReplayResidueFlag"].fillna(False).eq(False)
+        & frame["ReplayWindowExcludedFlag"].fillna(False).eq(False)
+        & frame["SameMillisecondBatchRiskFlag"].fillna(False).eq(False)
+        & (bid > 0)
+        & (ask > 0)
+        & (ask >= bid)
+        & (bid_size > 0)
+        & (ask_size > 0)
+    )
+    return frame[mask]
+
+
+def _polars_bool_col(pl: Any, name: str) -> Any:
+    return pl.col(name).cast(pl.Boolean, strict=False).fill_null(False)
 
 
 def _row_time(row: dict[str, Any]) -> datetime:
@@ -219,6 +308,13 @@ def _first_present(row: dict[str, Any], names: tuple[str, ...]) -> Any:
         value = row.get(name)
         if value not in {None, ""}:
             return value
+    return None
+
+
+def _first_schema_name(names: set[str], candidates: tuple[str, ...]) -> str | None:
+    for candidate in candidates:
+        if candidate in names:
+            return candidate
     return None
 
 
