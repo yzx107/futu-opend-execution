@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from futu_opend_execution.agent.newly_listed import build_newly_listed_universe, write_newly_listed_reports
+from futu_opend_execution.agent.newly_listed import build_newly_listed_universe, build_walk_forward_summary, write_newly_listed_reports
 
 
 @unittest.skipUnless(importlib.util.find_spec("polars"), "polars is required for parquet fixture")
@@ -133,6 +133,63 @@ class NewlyListedTests(unittest.TestCase):
             self.assertEqual(summary["candidate_count"], 1)
             self.assertEqual(summary["candidates"][0]["symbol"], "HK.01609")
             self.assertEqual(summary["candidates"][0]["universe_status"], "included")
+
+
+class NewlyListedWalkForwardTests(unittest.TestCase):
+    def test_walk_forward_summary_splits_train_and_validation_rankings(self) -> None:
+        base = {
+            "listing_year": 2026,
+            "universe": {"candidate_count": 1},
+            "evaluated_case_count": 2,
+            "result_row_count": 4,
+            "failure_count": 0,
+            "failures": [],
+            "assumptions": {"position_model": "fixture"},
+            "per_case_results": [
+                _result("2026-05-20", "1.5", "10", "10", 0),
+                _result("2026-05-20", "2.0", "20", "20", 0),
+                _result("2026-05-22", "1.5", "30", "30", 0),
+                _result("2026-05-22", "2.0", "-5", "-5", 1),
+            ],
+        }
+
+        summary = build_walk_forward_summary(base, validation_days=1, top_n=2)
+
+        self.assertEqual(summary["event"], "newly_listed_walk_forward_summary")
+        self.assertEqual(summary["split"]["train_dates"], ["2026-05-20"])
+        self.assertEqual(summary["split"]["validation_dates"], ["2026-05-22"])
+        self.assertEqual(summary["train_ranking"][0]["params"]["overextension_vol_multiple"], "2.0")
+        self.assertEqual(summary["walk_forward_ranking"][0]["params"]["overextension_vol_multiple"], "1.5")
+        self.assertEqual(summary["walk_forward_ranking"][0]["validation"]["score_sum"], "30")
+
+
+def _result(date: str, overextension: str, score: str, net_pnl: str, open_quantity: int) -> dict[str, object]:
+    return {
+        "symbol": "HK.01609",
+        "date": date,
+        "listing_date": "2026-05-05",
+        "params": {
+            "overextension_vol_multiple": overextension,
+            "high_pullback_vol_multiple": "0.3",
+            "rebuy_anchor_vol_band": "1.0",
+            "safety_buffer_bps": "20",
+            "max_sell_total_position_ratio": "0.5",
+            "max_round_trips": 1,
+        },
+        "sell_count": 1,
+        "rebuy_count": 1,
+        "round_trips_completed": 1,
+        "open_quantity": open_quantity,
+        "open_quantity_penalty": "0",
+        "realized_net_pnl": net_pnl,
+        "net_pnl_after_cost": net_pnl,
+        "initial_cost_basis": "100",
+        "final_economic_cost_basis": "99",
+        "cost_basis_reduction": "1",
+        "risk_block_count": 0,
+        "quality_block_count": 0,
+        "score": score,
+    }
 
 
 if __name__ == "__main__":

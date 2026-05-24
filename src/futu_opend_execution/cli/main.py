@@ -17,6 +17,7 @@ from futu_opend_execution.agent.approval import (
 )
 from futu_opend_execution.agent.newly_listed import (
     build_newly_listed_universe,
+    evaluate_newly_listed,
     optimize_newly_listed,
     write_newly_listed_reports,
 )
@@ -118,6 +119,32 @@ def build_parser() -> argparse.ArgumentParser:
     optimize_new.add_argument("--safety-buffer-grid", default=None)
     optimize_new.add_argument("--max-sell-ratio-grid", default=None)
     optimize_new.add_argument("--max-round-trips-grid", default=None)
+
+    evaluate_new = sub.add_parser("evaluate-newly-listed", help="Walk-forward evaluate newly listed HK cost-reducer parameters")
+    evaluate_new.add_argument("--listing-year", type=int, default=2026)
+    evaluate_new.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    evaluate_new.add_argument("--universe-path", default=None, help="Optional Hshare-native newly listed universe parquet/csv")
+    evaluate_new.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    evaluate_new.add_argument("--top-of-book-root", default=None)
+    evaluate_new.add_argument("--date", action="append", dest="dates")
+    evaluate_new.add_argument("--min-trade-dates", type=int, default=1)
+    evaluate_new.add_argument("--max-symbols", type=int, default=20)
+    evaluate_new.add_argument("--max-dates-per-symbol", type=int, default=5)
+    evaluate_new.add_argument("--lot-size", type=int, default=1)
+    evaluate_new.add_argument("--current-qty", type=int, default=2)
+    evaluate_new.add_argument("--top-n", type=int, default=20)
+    evaluate_new.add_argument("--train-end", default=None)
+    evaluate_new.add_argument("--validation-start", default=None)
+    evaluate_new.add_argument("--validation-end", default=None)
+    evaluate_new.add_argument("--validation-days", type=int, default=3)
+    evaluate_new.add_argument("--report-json", default="reports/agent/newly_listed_walk_forward_summary.json")
+    evaluate_new.add_argument("--report-md", default="reports/agent/newly_listed_walk_forward_rank.md")
+    evaluate_new.add_argument("--overextension-grid", default=None)
+    evaluate_new.add_argument("--pullback-grid", default=None)
+    evaluate_new.add_argument("--rebuy-anchor-grid", default=None)
+    evaluate_new.add_argument("--safety-buffer-grid", default=None)
+    evaluate_new.add_argument("--max-sell-ratio-grid", default=None)
+    evaluate_new.add_argument("--max-round-trips-grid", default=None)
 
     paper = sub.add_parser("paper", help="Build paper ledger/report from replay JSONL")
     paper.add_argument("replay_log")
@@ -229,6 +256,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_newly_listed_universe(args)
     if args.command == "optimize-newly-listed":
         return _cmd_optimize_newly_listed(args)
+    if args.command == "evaluate-newly-listed":
+        return _cmd_evaluate_newly_listed(args)
     if args.command == "paper":
         print(json.dumps(run_paper(replay_log_path=args.replay_log, ledger_path=args.ledger_path, report_path=args.report_path), ensure_ascii=False))
         return 0
@@ -309,15 +338,7 @@ def _cmd_newly_listed_universe(args) -> int:
 
 
 def _cmd_optimize_newly_listed(args) -> int:
-    default_grid = CostReducerGrid()
-    grid = CostReducerGrid(
-        overextension_vol_multiple=_decimal_tuple(args.overextension_grid, default_grid.overextension_vol_multiple),
-        high_pullback_vol_multiple=_decimal_tuple(args.pullback_grid, default_grid.high_pullback_vol_multiple),
-        rebuy_anchor_vol_band=_decimal_tuple(args.rebuy_anchor_grid, default_grid.rebuy_anchor_vol_band),
-        safety_buffer_bps=_decimal_tuple(args.safety_buffer_grid, default_grid.safety_buffer_bps),
-        max_sell_total_position_ratio=_decimal_tuple(args.max_sell_ratio_grid, default_grid.max_sell_total_position_ratio),
-        max_round_trips=_int_tuple(args.max_round_trips_grid, default_grid.max_round_trips),
-    )
+    grid = _grid_from_args(args)
     summary = optimize_newly_listed(
         instrument_profile_path=args.instrument_profile,
         universe_path=args.universe_path,
@@ -335,6 +356,39 @@ def _cmd_optimize_newly_listed(args) -> int:
     )
     write_newly_listed_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
     print(json.dumps({key: summary[key] for key in ("event", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")}, ensure_ascii=False))
+    return 0
+
+
+def _cmd_evaluate_newly_listed(args) -> int:
+    summary = evaluate_newly_listed(
+        instrument_profile_path=args.instrument_profile,
+        universe_path=args.universe_path,
+        data_root=args.data_root,
+        top_of_book_root=args.top_of_book_root,
+        listing_year=args.listing_year,
+        dates=args.dates,
+        min_trade_dates=args.min_trade_dates,
+        max_symbols=args.max_symbols,
+        max_dates_per_symbol=args.max_dates_per_symbol,
+        lot_size=args.lot_size,
+        current_qty=args.current_qty,
+        grid=_grid_from_args(args),
+        top_n=args.top_n,
+        train_end=args.train_end,
+        validation_start=args.validation_start,
+        validation_end=args.validation_end,
+        validation_days=args.validation_days,
+    )
+    write_newly_listed_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
+    print(
+        json.dumps(
+            {
+                key: summary[key]
+                for key in ("event", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")
+            },
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 
@@ -606,6 +660,18 @@ def _decimal_tuple(value: str | None, default: tuple[Decimal, ...]) -> tuple[Dec
     if not value:
         return default
     return tuple(Decimal(item.strip()) for item in value.split(",") if item.strip())
+
+
+def _grid_from_args(args) -> CostReducerGrid:
+    default_grid = CostReducerGrid()
+    return CostReducerGrid(
+        overextension_vol_multiple=_decimal_tuple(args.overextension_grid, default_grid.overextension_vol_multiple),
+        high_pullback_vol_multiple=_decimal_tuple(args.pullback_grid, default_grid.high_pullback_vol_multiple),
+        rebuy_anchor_vol_band=_decimal_tuple(args.rebuy_anchor_grid, default_grid.rebuy_anchor_vol_band),
+        safety_buffer_bps=_decimal_tuple(args.safety_buffer_grid, default_grid.safety_buffer_bps),
+        max_sell_total_position_ratio=_decimal_tuple(args.max_sell_ratio_grid, default_grid.max_sell_total_position_ratio),
+        max_round_trips=_int_tuple(args.max_round_trips_grid, default_grid.max_round_trips),
+    )
 
 
 def _int_tuple(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:

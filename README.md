@@ -113,6 +113,27 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main optimize-newly-listed \
 
 The newly listed optimizer is research/paper only. It reports `net_pnl_after_cost`, `cost_basis_reduction`, completed round trips, open-quantity penalty, and quality/risk block counts. With the Hshare-native universe, only `universe_status=included` rows are admitted. With the size-caveat top-of-book handoff, only `StrategyHandoffEligibleFlag=true` rows passing all replay-quality gates are executable. If Hshare rows do not provide strategy-grade bid/ask depth, the strategy stays blocked and the ranking is not a tradable parameter recommendation.
 
+Run a walk-forward evaluation that uses earlier dates for parameter selection and the latest dates for validation:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main evaluate-newly-listed \
+  --listing-year 2026 \
+  --universe-path /Volumes/Data/港股Tick数据/reference/newly_listed_hk/year=2026/newly_listed_hk_2026.parquet \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
+  --max-symbols 20 \
+  --max-dates-per-symbol 5 \
+  --validation-days 2 \
+  --overextension-grid 1.5,2.0,2.5 \
+  --pullback-grid 0.3,0.5 \
+  --rebuy-anchor-grid 0.5,1.0 \
+  --safety-buffer-grid 20,30 \
+  --max-sell-ratio-grid 0.25,0.5 \
+  --report-json reports/agent/newly_listed_walk_forward_summary.json \
+  --report-md reports/agent/newly_listed_walk_forward_rank.md
+```
+
+The walk-forward report ranks train-selected parameters by validation-period evidence. Treat it as a filter against obvious overfitting, not a guarantee that the parameter set has future edge.
+
 Run live dry-run monitor from watchlist:
 
 ```bash

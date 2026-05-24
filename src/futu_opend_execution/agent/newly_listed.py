@@ -193,6 +193,105 @@ def optimize_newly_listed(
     }
 
 
+def evaluate_newly_listed(
+    *,
+    instrument_profile_path: Path | str = DEFAULT_INSTRUMENT_PROFILE,
+    universe_path: Path | str | None = None,
+    data_root: Path | str = DEFAULT_HSHARE_L2_ROOT,
+    top_of_book_root: Path | str | None = None,
+    listing_year: int = 2026,
+    dates: Iterable[str] | None = None,
+    min_trade_dates: int = 1,
+    max_symbols: int | None = None,
+    max_dates_per_symbol: int | None = None,
+    lot_size: int = 1,
+    current_qty: int = 2,
+    grid: CostReducerGrid = CostReducerGrid(),
+    top_n: int = 20,
+    train_end: str | None = None,
+    validation_start: str | None = None,
+    validation_end: str | None = None,
+    validation_days: int = 3,
+) -> dict[str, Any]:
+    base = optimize_newly_listed(
+        instrument_profile_path=instrument_profile_path,
+        universe_path=universe_path,
+        data_root=data_root,
+        top_of_book_root=top_of_book_root,
+        listing_year=listing_year,
+        dates=dates,
+        min_trade_dates=min_trade_dates,
+        max_symbols=max_symbols,
+        max_dates_per_symbol=max_dates_per_symbol,
+        lot_size=lot_size,
+        current_qty=current_qty,
+        grid=grid,
+        top_n=10_000,
+    )
+    return build_walk_forward_summary(
+        base,
+        top_n=top_n,
+        train_end=train_end,
+        validation_start=validation_start,
+        validation_end=validation_end,
+        validation_days=validation_days,
+    )
+
+
+def build_walk_forward_summary(
+    base: dict[str, Any],
+    *,
+    top_n: int = 20,
+    train_end: str | None = None,
+    validation_start: str | None = None,
+    validation_end: str | None = None,
+    validation_days: int = 3,
+) -> dict[str, Any]:
+    rows = list(base.get("per_case_results", []))
+    all_dates = sorted({str(row["date"]) for row in rows})
+    train_dates, validation_dates = _walk_forward_dates(
+        all_dates,
+        train_end=train_end,
+        validation_start=validation_start,
+        validation_end=validation_end,
+        validation_days=validation_days,
+    )
+    train_rows = [row for row in rows if str(row["date"]) in train_dates]
+    validation_rows = [row for row in rows if str(row["date"]) in validation_dates]
+    train_ranking = _aggregate_rankings(train_rows)
+    validation_ranking = _aggregate_rankings(validation_rows)
+    validation_by_key = {_params_key(row["params"]): row for row in validation_ranking}
+    walk_forward = []
+    for rank, train in enumerate(train_ranking, start=1):
+        validation = validation_by_key.get(_params_key(train["params"]), _empty_rollup(train["params"]))
+        walk_forward.append({"train_rank": rank, "params": train["params"], "train": train, "validation": validation})
+    walk_forward.sort(key=_walk_forward_rank_key, reverse=True)
+    return {
+        "event": "newly_listed_walk_forward_summary",
+        "listing_year": base["listing_year"],
+        "universe": base["universe"],
+        "split": {
+            "all_dates": all_dates,
+            "train_dates": train_dates,
+            "validation_dates": validation_dates,
+            "train_end": train_end,
+            "validation_start": validation_start,
+            "validation_end": validation_end,
+            "validation_days": validation_days,
+        },
+        "evaluated_case_count": base["evaluated_case_count"],
+        "result_row_count": base["result_row_count"],
+        "failure_count": base["failure_count"],
+        "failures": base["failures"],
+        "assumptions": base["assumptions"],
+        "top_n": top_n,
+        "train_ranking": train_ranking[:top_n],
+        "validation_ranking": validation_ranking[:top_n],
+        "walk_forward_ranking": walk_forward[:top_n],
+        "per_case_results": rows,
+    }
+
+
 def write_newly_listed_reports(summary: dict[str, Any], *, json_path: Path | str, markdown_path: Path | str | None = None) -> None:
     target = Path(json_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -437,6 +536,64 @@ def _aggregate_rankings(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [_jsonable_bucket(item) for item in ranked]
 
 
+def _walk_forward_dates(
+    all_dates: list[str],
+    *,
+    train_end: str | None,
+    validation_start: str | None,
+    validation_end: str | None,
+    validation_days: int,
+) -> tuple[list[str], list[str]]:
+    if not all_dates:
+        return [], []
+    if validation_start:
+        validation_dates = [value for value in all_dates if value >= validation_start and (validation_end is None or value <= validation_end)]
+        train_dates = [value for value in all_dates if value < validation_start]
+    else:
+        split = max(len(all_dates) - max(validation_days, 1), 0)
+        train_dates = all_dates[:split]
+        validation_dates = all_dates[split:]
+    if train_end:
+        train_dates = [value for value in train_dates if value <= train_end]
+    return train_dates, validation_dates
+
+
+def _params_key(params: dict[str, Any]) -> str:
+    return json.dumps(params, sort_keys=True, ensure_ascii=False)
+
+
+def _empty_rollup(params: dict[str, Any]) -> dict[str, Any]:
+    return _jsonable_bucket(
+        {
+            "params": params,
+            "cases": 0,
+            "score_sum": Decimal("0"),
+            "net_pnl_after_cost_sum": Decimal("0"),
+            "realized_net_pnl_sum": Decimal("0"),
+            "cost_basis_reduction_sum": Decimal("0"),
+            "round_trips_completed": 0,
+            "sell_count": 0,
+            "rebuy_count": 0,
+            "open_quantity_sum": 0,
+            "open_quantity_penalty_sum": Decimal("0"),
+            "risk_block_count": 0,
+            "quality_block_count": 0,
+        }
+    )
+
+
+def _walk_forward_rank_key(row: dict[str, Any]) -> tuple[int, Decimal, Decimal, Decimal, Decimal]:
+    validation = row["validation"]
+    train = row["train"]
+    return (
+        1 if int(validation["cases"]) > 0 else 0,
+        _decimal(validation["score_sum"]),
+        _decimal(validation["net_pnl_after_cost_sum"]),
+        -_decimal(validation["open_quantity_sum"]),
+        _decimal(train["score_sum"]),
+    )
+
+
 def _jsonable_bucket(item: dict[str, Any]) -> dict[str, Any]:
     return {
         key: (str(value) if isinstance(value, Decimal) else value)
@@ -463,6 +620,41 @@ def _markdown(summary: dict[str, Any]) -> str:
             )
         lines.extend(["", "## Limitations", ""])
         lines.extend(f"- {item}" for item in summary["limitations"])
+        return "\n".join(lines) + "\n"
+
+    if summary.get("event") == "newly_listed_walk_forward_summary":
+        split = summary["split"]
+        lines = [
+            "# Newly Listed Walk-Forward Evaluation",
+            "",
+            f"- listing_year: {summary['listing_year']}",
+            f"- universe_count: {summary['universe']['candidate_count']}",
+            f"- evaluated_case_count: {summary['evaluated_case_count']}",
+            f"- train_dates: {len(split['train_dates'])}",
+            f"- validation_dates: {len(split['validation_dates'])}",
+            f"- failure_count: {summary['failure_count']}",
+            "",
+            "## Walk-Forward Ranking",
+            "",
+            "| rank | train_rank | validation_score | validation_cases | validation_net_pnl | validation_open_qty | train_score | params |",
+            "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+        ]
+        for index, row in enumerate(summary["walk_forward_ranking"], start=1):
+            validation = row["validation"]
+            train = row["train"]
+            lines.append(
+                f"| {index} | {row['train_rank']} | {validation['score_sum']} | {validation['cases']} | {validation['net_pnl_after_cost_sum']} | {validation['open_quantity_sum']} | {train['score_sum']} | `{row['params']}` |"
+            )
+        lines.extend(
+            [
+                "",
+                "## Caveats",
+                "",
+                "- This is replay/paper research only, not a real-trading recommendation.",
+                "- Validation ranking is out-of-sample only for the selected date split, not proof of future edge.",
+                "- Rows blocked by Hshare handoff quality gates remain non-executable evidence.",
+            ]
+        )
         return "\n".join(lines) + "\n"
 
     lines = [
