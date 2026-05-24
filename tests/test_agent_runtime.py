@@ -58,6 +58,18 @@ class AgentRuntimeTests(unittest.TestCase):
             "0.4",
             "--progress",
         ])
+        reversion = parser.parse_args([
+            "evaluate-sell-rebuy-newly-listed",
+            "--listing-year",
+            "2026",
+            "--entry-grid",
+            "1.0,1.5",
+            "--direction-grid",
+            "BUY_SELL",
+            "--max-hold-grid",
+            "60,300",
+            "--progress",
+        ])
         futures = parser.parse_args(["futures", "contracts", "--config", "configs/futures_contracts.example.json"])
         futures_info = parser.parse_args(["futures", "opend-info", "HK.HSI2606", "--check-trade-context"])
         futures_replay = parser.parse_args(["futures", "replay", "HK.HSI2606", "--fixture"])
@@ -75,6 +87,9 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(evaluate_new.validation_days, 2)
         self.assertEqual(evaluate_new.max_quality_block_ratio, "0.4")
         self.assertTrue(evaluate_new.progress)
+        self.assertEqual(reversion.command, "evaluate-sell-rebuy-newly-listed")
+        self.assertEqual(reversion.direction_grid, "BUY_SELL")
+        self.assertEqual(reversion.max_hold_grid, "60,300")
         self.assertEqual(futures.command, "futures")
         self.assertEqual(futures.futures_command, "contracts")
         self.assertEqual(futures_info.futures_command, "opend-info")

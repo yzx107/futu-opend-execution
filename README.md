@@ -138,6 +138,32 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main evaluate-newly-listed \
 
 The walk-forward report ranks train-selected parameters by validation-period evidence. A row is marked `CANDIDATE` only if validation `net_pnl_after_cost` is positive, completed round trips meet the configured floor, open quantity is not above the configured cap, and quality-block ratio is below the configured ceiling. Otherwise the report is an explicit `NO_GO`. Treat this as a filter against obvious overfitting, not a guarantee that the parameter set has future edge.
 
+Run a trade-only high-sell/low-rebuy reversion sweep for newly listed names:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main evaluate-sell-rebuy-newly-listed \
+  --listing-year 2026 \
+  --universe-path /Volumes/Data/港股Tick数据/reference/newly_listed_hk/year=2026/newly_listed_hk_2026.parquet \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
+  --max-symbols 20 \
+  --max-dates-per-symbol 5 \
+  --validation-days 2 \
+  --direction-grid SELL_REBUY,BUY_SELL \
+  --entry-grid 2.0,3.0,4.0 \
+  --exit-grid 0 \
+  --stop-grid 3.0,5.0 \
+  --max-hold-grid 300,900 \
+  --cost-bps-grid 35 \
+  --min-validation-round-trips 10 \
+  --max-forced-rebuy-ratio 0.2 \
+  --max-quality-block-ratio 0.5 \
+  --progress \
+  --report-json reports/agent/sell_rebuy_walk_forward_summary.json \
+  --report-md reports/agent/sell_rebuy_walk_forward_rank.md
+```
+
+`SELL_REBUY` models existing-inventory high sell then low rebuy. `BUY_SELL` models buy-dip then sell-rebound research, but it is paper/replay only and is not eligible for the guarded real-order path. A `CANDIDATE` must pass both train-period and validation-period gates for net PnL after cost, completed round trips, forced exits, and top-of-book quality. Relaxing `--max-quality-block-ratio` is useful for research triage, but high quality-block ratios mean the result is not execution-grade.
+
 Run live dry-run monitor from watchlist:
 
 ```bash

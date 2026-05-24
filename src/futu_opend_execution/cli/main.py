@@ -24,6 +24,11 @@ from futu_opend_execution.agent.newly_listed import (
 from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_reducer, write_optimizer_reports
 from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
+from futu_opend_execution.agent.reversion import (
+    SellRebuyGrid,
+    evaluate_newly_listed_sell_rebuy,
+    write_sell_rebuy_reports,
+)
 from futu_opend_execution.agent.futures_runtime import FuturesReplayConfig, run_futures_replay
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
 from futu_opend_execution.contracts import ContractSpecError, load_contract_specs
@@ -151,6 +156,34 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_new.add_argument("--max-sell-ratio-grid", default=None)
     evaluate_new.add_argument("--max-round-trips-grid", default=None)
 
+    reversion = sub.add_parser("evaluate-sell-rebuy-newly-listed", help="Evaluate trade-only high-sell/low-rebuy reversion candidates")
+    reversion.add_argument("--listing-year", type=int, default=2026)
+    reversion.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    reversion.add_argument("--universe-path", default=None)
+    reversion.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
+    reversion.add_argument("--top-of-book-root", default=None)
+    reversion.add_argument("--date", action="append", dest="dates")
+    reversion.add_argument("--min-trade-dates", type=int, default=1)
+    reversion.add_argument("--max-symbols", type=int, default=20)
+    reversion.add_argument("--max-dates-per-symbol", type=int, default=5)
+    reversion.add_argument("--validation-days", type=int, default=3)
+    reversion.add_argument("--top-n", type=int, default=20)
+    reversion.add_argument("--quantity", type=int, default=1)
+    reversion.add_argument("--min-ticks-to-activate", type=int, default=5)
+    reversion.add_argument("--direction-grid", default=None, help="Comma-separated SELL_REBUY,BUY_SELL directions")
+    reversion.add_argument("--entry-grid", default=None)
+    reversion.add_argument("--exit-grid", default=None)
+    reversion.add_argument("--stop-grid", default=None)
+    reversion.add_argument("--max-hold-grid", default=None)
+    reversion.add_argument("--cost-bps-grid", default=None)
+    reversion.add_argument("--min-validation-net-pnl", default="0")
+    reversion.add_argument("--min-validation-round-trips", type=int, default=10)
+    reversion.add_argument("--max-forced-rebuy-ratio", default="0.5")
+    reversion.add_argument("--max-quality-block-ratio", default="0.5")
+    reversion.add_argument("--progress", action="store_true")
+    reversion.add_argument("--report-json", default="reports/agent/sell_rebuy_walk_forward_summary.json")
+    reversion.add_argument("--report-md", default="reports/agent/sell_rebuy_walk_forward_rank.md")
+
     paper = sub.add_parser("paper", help="Build paper ledger/report from replay JSONL")
     paper.add_argument("replay_log")
     paper.add_argument("--ledger-path", default="logs/agent/paper_ledger.jsonl")
@@ -263,6 +296,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_optimize_newly_listed(args)
     if args.command == "evaluate-newly-listed":
         return _cmd_evaluate_newly_listed(args)
+    if args.command == "evaluate-sell-rebuy-newly-listed":
+        return _cmd_evaluate_sell_rebuy_newly_listed(args)
     if args.command == "paper":
         print(json.dumps(run_paper(replay_log_path=args.replay_log, ledger_path=args.ledger_path, report_path=args.report_path), ensure_ascii=False))
         return 0
@@ -395,6 +430,41 @@ def _cmd_evaluate_newly_listed(args) -> int:
             {
                 key: summary[key]
                 for key in ("event", "decision", "candidate_count", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")
+            },
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def _cmd_evaluate_sell_rebuy_newly_listed(args) -> int:
+    summary = evaluate_newly_listed_sell_rebuy(
+        instrument_profile_path=args.instrument_profile,
+        universe_path=args.universe_path,
+        data_root=args.data_root,
+        top_of_book_root=args.top_of_book_root,
+        listing_year=args.listing_year,
+        dates=args.dates,
+        min_trade_dates=args.min_trade_dates,
+        max_symbols=args.max_symbols,
+        max_dates_per_symbol=args.max_dates_per_symbol,
+        grid=_sell_rebuy_grid_from_args(args),
+        top_n=args.top_n,
+        validation_days=args.validation_days,
+        min_validation_net_pnl=args.min_validation_net_pnl,
+        min_validation_round_trips=args.min_validation_round_trips,
+        max_forced_rebuy_ratio=args.max_forced_rebuy_ratio,
+        max_quality_block_ratio=args.max_quality_block_ratio,
+        quantity=args.quantity,
+        min_ticks_to_activate=args.min_ticks_to_activate,
+        progress=args.progress,
+    )
+    write_sell_rebuy_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
+    print(
+        json.dumps(
+            {
+                key: summary[key]
+                for key in ("event", "decision", "candidate_count", "evaluated_case_count", "result_row_count", "failure_count")
             },
             ensure_ascii=False,
         )
@@ -684,10 +754,28 @@ def _grid_from_args(args) -> CostReducerGrid:
     )
 
 
+def _sell_rebuy_grid_from_args(args) -> SellRebuyGrid:
+    default_grid = SellRebuyGrid()
+    return SellRebuyGrid(
+        direction=_str_tuple(args.direction_grid, default_grid.direction),
+        entry_vol_multiple=_decimal_tuple(args.entry_grid, default_grid.entry_vol_multiple),
+        exit_vol_band=_decimal_tuple(args.exit_grid, default_grid.exit_vol_band),
+        stop_vol_multiple=_decimal_tuple(args.stop_grid, default_grid.stop_vol_multiple),
+        max_hold_states=_int_tuple(args.max_hold_grid, default_grid.max_hold_states),
+        cost_bps=_decimal_tuple(args.cost_bps_grid, default_grid.cost_bps),
+    )
+
+
 def _int_tuple(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
     if not value:
         return default
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+
+def _str_tuple(value: str | None, default: tuple[str, ...]) -> tuple[str, ...]:
+    if not value:
+        return default
+    return tuple(item.strip().upper() for item in value.split(",") if item.strip())
 
 
 def _parse_marks(values: Sequence[str]) -> dict[str, Decimal]:
