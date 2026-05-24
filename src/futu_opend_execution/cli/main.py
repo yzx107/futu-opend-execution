@@ -24,11 +24,13 @@ from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_
 from futu_opend_execution.agent.real_execution import RealExecutionService
 from futu_opend_execution.agent.risk import RealOrderGuard
 from futu_opend_execution.agent.runtime import TradingAgentConfig, run_monitor, run_paper, run_replay, run_watchlist_monitor
+from futu_opend_execution.contracts import ContractSpecError, load_contract_specs
 from futu_opend_execution.data.hshare_l2 import DEFAULT_HSHARE_L2_ROOT, HshareL2ReplayProvider
 from futu_opend_execution.data.hshare_top_of_book import HshareTopOfBookReplayProvider
 from futu_opend_execution.data.market import MarketEvent
 from futu_opend_execution.data.opend_live import OpenDLiveProvider
 from futu_opend_execution.execution.positions import OpenDPositionProvider
+from futu_opend_execution.ledger.futures import FuturesLedgerError, FuturesPaperLedger, summarize_futures_paper_ledger
 from futu_opend_execution.models import BrokerOrderSnapshot, BrokerOrderStatus, TradeMode
 from futu_opend_execution.strategy_config import CostReducerRuntimeParams, config_to_jsonable
 from futu_opend_execution.watchlist import WatchlistConfigError, load_watchlist_config
@@ -113,6 +115,25 @@ def build_parser() -> argparse.ArgumentParser:
     paper.add_argument("--ledger-path", default="logs/agent/paper_ledger.jsonl")
     paper.add_argument("--report-path", default="reports/agent/paper_summary.json")
 
+    futures = sub.add_parser("futures", help="Futures contract specs and paper-ledger utilities")
+    futures_sub = futures.add_subparsers(dest="futures_command", required=True)
+    futures_contracts = futures_sub.add_parser("contracts", help="Validate and show futures contract specs")
+    futures_contracts.add_argument("--config", default="configs/futures_contracts.example.json")
+    futures_fill = futures_sub.add_parser("paper-fill", help="Append one futures paper fill")
+    futures_fill.add_argument("symbol")
+    futures_fill.add_argument("action", choices=["BUY_OPEN", "SELL_OPEN", "SELL_CLOSE", "BUY_CLOSE"])
+    futures_fill.add_argument("--quantity", type=int, required=True)
+    futures_fill.add_argument("--price", required=True)
+    futures_fill.add_argument("--contracts-config", default="configs/futures_contracts.example.json")
+    futures_fill.add_argument("--ledger-path", default="logs/agent/futures_paper_ledger.jsonl")
+    futures_fill.add_argument("--event-id", default=None)
+    futures_fill.add_argument("--timestamp", default=None)
+    futures_fill.add_argument("--reason", default="")
+    futures_summary = futures_sub.add_parser("paper-summary", help="Summarize a futures paper ledger")
+    futures_summary.add_argument("--contracts-config", default="configs/futures_contracts.example.json")
+    futures_summary.add_argument("--ledger-path", default="logs/agent/futures_paper_ledger.jsonl")
+    futures_summary.add_argument("--mark", action="append", default=[], help="Mark price as SYMBOL=PRICE; can repeat")
+
     monitor = sub.add_parser("monitor", help="Live OpenD dry-run monitor")
     monitor.add_argument("symbol", nargs="?", help="HK symbol, e.g. HK.00700; omit when --config is used")
     monitor.add_argument("--config", help="Watchlist JSON config")
@@ -180,6 +201,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "paper":
         print(json.dumps(run_paper(replay_log_path=args.replay_log, ledger_path=args.ledger_path, report_path=args.report_path), ensure_ascii=False))
         return 0
+    if args.command == "futures":
+        return _cmd_futures(args)
     if args.command == "monitor":
         return _cmd_monitor(args)
     if args.command == "watchlist":
@@ -280,6 +303,40 @@ def _cmd_optimize_newly_listed(args) -> int:
     write_newly_listed_reports(summary, json_path=args.report_json, markdown_path=args.report_md)
     print(json.dumps({key: summary[key] for key in ("event", "listing_year", "evaluated_case_count", "result_row_count", "failure_count")}, ensure_ascii=False))
     return 0
+
+
+def _cmd_futures(args) -> int:
+    try:
+        contracts = load_contract_specs(args.config if args.futures_command == "contracts" else args.contracts_config)
+        if args.futures_command == "contracts":
+            payload = {
+                "event": "futures_contracts",
+                "contract_count": len(contracts),
+                "contracts": [spec.to_jsonable() for spec in contracts.values()],
+            }
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
+        if args.futures_command == "paper-fill":
+            ledger = FuturesPaperLedger(args.ledger_path, contracts=contracts)
+            row = ledger.record_fill(
+                symbol=args.symbol,
+                action=args.action,
+                quantity=args.quantity,
+                price=args.price,
+                timestamp=args.timestamp,
+                event_id=args.event_id,
+                reason=args.reason,
+            )
+            print(json.dumps({"ok": True, "row": row}, ensure_ascii=False))
+            return 0
+        if args.futures_command == "paper-summary":
+            summary = summarize_futures_paper_ledger(args.ledger_path, contracts=contracts, mark_prices=_parse_marks(args.mark))
+            print(json.dumps(summary, ensure_ascii=False))
+            return 0
+    except (ContractSpecError, FuturesLedgerError, FileNotFoundError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
+    raise AssertionError(args.futures_command)
 
 
 def _replay_provider_from_args(args, config: TradingAgentConfig):
@@ -480,6 +537,16 @@ def _int_tuple(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
     if not value:
         return default
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+
+
+def _parse_marks(values: Sequence[str]) -> dict[str, Decimal]:
+    marks: dict[str, Decimal] = {}
+    for value in values:
+        if "=" not in value:
+            raise FuturesLedgerError("--mark must use SYMBOL=PRICE")
+        symbol, price = value.split("=", 1)
+        marks[symbol.strip().upper()] = Decimal(price.strip())
+    return marks
 
 
 def _fixture_events(symbol: str) -> list[MarketEvent]:

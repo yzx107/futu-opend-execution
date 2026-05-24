@@ -134,6 +134,42 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main monitor HK.00700 \
 
 JSONL logs include `market_state`, `risk_event`, `strategy_signal`, `paper_trade`, `replay_summary`, and `paper_summary` rows. Sensitive trading passwords, tokens, account payloads, and raw account data must not be logged.
 
+## Futures Foundation
+
+Index-futures support is research/paper-only at this stage. The repo now has a separate contract spec and futures paper ledger so futures accounting does not leak into the stock cost-reducer inventory model.
+
+Validate example futures contract specs:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures contracts \
+  --config configs/futures_contracts.example.json
+```
+
+Append paper fills and summarize PnL / margin:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures paper-fill HK.HSI2606 BUY_OPEN \
+  --quantity 1 \
+  --price 20000 \
+  --event-id demo-open \
+  --contracts-config configs/futures_contracts.example.json \
+  --ledger-path logs/agent/futures_paper_ledger.jsonl
+
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures paper-fill HK.HSI2606 SELL_CLOSE \
+  --quantity 1 \
+  --price 20010 \
+  --event-id demo-close \
+  --contracts-config configs/futures_contracts.example.json \
+  --ledger-path logs/agent/futures_paper_ledger.jsonl
+
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures paper-summary \
+  --contracts-config configs/futures_contracts.example.json \
+  --ledger-path logs/agent/futures_paper_ledger.jsonl \
+  --mark HK.HSI2606=20010
+```
+
+The futures foundation validates tick alignment, multiplier, min order size, commission, FIFO close PnL, open margin, and mark-to-market. It does not place futures orders, model exchange-specific tick ladders, handle rollover automatically, or validate live OpenD futures order behavior.
+
 ## Manual Real-Order Approval
 
 The real path is stacked on PR1's dry-run / risk / signal semantics. PR2 consumes low-coupling approval snapshots rather than reimplementing PR1's `WatchlistConfig`, `MarketState`, `RiskEvent`, or `BlackSwanSentinel`.

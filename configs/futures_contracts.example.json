@@ -1,0 +1,44 @@
+{
+  "contracts": [
+    {
+      "symbol": "HK.HSI2606",
+      "exchange": "HKFE",
+      "asset_class": "INDEX_FUTURE",
+      "contract_multiplier": "50",
+      "tick_size": "1",
+      "currency": "HKD",
+      "min_order_size": 1,
+      "margin_rate": "0.08",
+      "commission_per_contract": "12",
+      "session_timezone": "Asia/Hong_Kong",
+      "trading_sessions": [
+        "09:15-12:00",
+        "13:00-16:30",
+        "17:15-03:00"
+      ],
+      "expiry_date": "2026-06-29",
+      "rollover_group": "HSI",
+      "notes": "Example only. Verify live HKFE/OpenD contract spec before real use."
+    },
+    {
+      "symbol": "HK.MHI2606",
+      "exchange": "HKFE",
+      "asset_class": "INDEX_FUTURE",
+      "contract_multiplier": "10",
+      "tick_size": "1",
+      "currency": "HKD",
+      "min_order_size": 1,
+      "margin_rate": "0.08",
+      "commission_per_contract": "8",
+      "session_timezone": "Asia/Hong_Kong",
+      "trading_sessions": [
+        "09:15-12:00",
+        "13:00-16:30",
+        "17:15-03:00"
+      ],
+      "expiry_date": "2026-06-29",
+      "rollover_group": "MHI",
+      "notes": "Example only. Small-contract smoke target, not a recommendation."
+    }
+  ]
+}
