@@ -145,6 +145,19 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main futures contracts \
   --config configs/futures_contracts.example.json
 ```
 
+Probe OpenD futures contract metadata in read-only mode:
+
+```bash
+PYTHONPATH=src python -m futu_opend_execution.cli.main futures opend-info HK.HSI2606 \
+  --check-trade-context \
+  --margin-rate 0.08 \
+  --commission-per-contract 12
+```
+
+This calls OpenD quote `get_future_info` and can optionally open then close `OpenFutureTradeContext` without unlocking trade or submitting orders. The generated `contract_specs` are a local starting point; verify exchange multiplier, tick size, margin, fee, expiry, session, and rollover before any real use.
+
+If OpenD is not listening on local loopback, the command fails fast before the Futu SDK enters its reconnect loop.
+
 Append paper fills and summarize PnL / margin:
 
 ```bash

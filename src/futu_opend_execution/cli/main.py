@@ -29,9 +29,13 @@ from futu_opend_execution.data.hshare_l2 import DEFAULT_HSHARE_L2_ROOT, HshareL2
 from futu_opend_execution.data.hshare_top_of_book import HshareTopOfBookReplayProvider
 from futu_opend_execution.data.market import MarketEvent
 from futu_opend_execution.data.opend_live import OpenDLiveProvider
+from futu_opend_execution.execution.broker import BrokerError
+from futu_opend_execution.execution.market_data import MarketDataError
 from futu_opend_execution.execution.positions import OpenDPositionProvider
+from futu_opend_execution.execution.futu_futures import FutuOpenDFuturesClient
 from futu_opend_execution.ledger.futures import FuturesLedgerError, FuturesPaperLedger, summarize_futures_paper_ledger
 from futu_opend_execution.models import BrokerOrderSnapshot, BrokerOrderStatus, TradeMode
+from futu_opend_execution.risk import ExecutionValidationError
 from futu_opend_execution.strategy_config import CostReducerRuntimeParams, config_to_jsonable
 from futu_opend_execution.watchlist import WatchlistConfigError, load_watchlist_config
 
@@ -119,6 +123,11 @@ def build_parser() -> argparse.ArgumentParser:
     futures_sub = futures.add_subparsers(dest="futures_command", required=True)
     futures_contracts = futures_sub.add_parser("contracts", help="Validate and show futures contract specs")
     futures_contracts.add_argument("--config", default="configs/futures_contracts.example.json")
+    futures_info = futures_sub.add_parser("opend-info", help="Read futures contract metadata from OpenD get_future_info")
+    futures_info.add_argument("symbols", nargs="+")
+    futures_info.add_argument("--check-trade-context", action="store_true", help="Open and close OpenFutureTradeContext without placing orders")
+    futures_info.add_argument("--margin-rate", default="0")
+    futures_info.add_argument("--commission-per-contract", default="0")
     futures_fill = futures_sub.add_parser("paper-fill", help="Append one futures paper fill")
     futures_fill.add_argument("symbol")
     futures_fill.add_argument("action", choices=["BUY_OPEN", "SELL_OPEN", "SELL_CLOSE", "BUY_CLOSE"])
@@ -307,8 +316,8 @@ def _cmd_optimize_newly_listed(args) -> int:
 
 def _cmd_futures(args) -> int:
     try:
-        contracts = load_contract_specs(args.config if args.futures_command == "contracts" else args.contracts_config)
         if args.futures_command == "contracts":
+            contracts = load_contract_specs(args.config)
             payload = {
                 "event": "futures_contracts",
                 "contract_count": len(contracts),
@@ -316,6 +325,27 @@ def _cmd_futures(args) -> int:
             }
             print(json.dumps(payload, ensure_ascii=False))
             return 0
+        if args.futures_command == "opend-info":
+            with FutuOpenDFuturesClient() as client:
+                infos = client.get_future_info(args.symbols)
+                payload = {
+                    "event": "futures_opend_info",
+                    "symbol_count": len(infos),
+                    "read_only": True,
+                    "future_trade_context": client.probe_future_trade_context() if args.check_trade_context else None,
+                    "future_infos": [info.to_jsonable() for info in infos],
+                    "contract_specs": [
+                        info.to_contract_spec(
+                            margin_rate=args.margin_rate,
+                            commission_per_contract=args.commission_per_contract,
+                        ).to_jsonable()
+                        for info in infos
+                        if _is_cli_index_future(info.contract_type)
+                    ],
+                }
+            print(json.dumps(payload, ensure_ascii=False))
+            return 0
+        contracts = load_contract_specs(args.contracts_config)
         if args.futures_command == "paper-fill":
             ledger = FuturesPaperLedger(args.ledger_path, contracts=contracts)
             row = ledger.record_fill(
@@ -333,7 +363,7 @@ def _cmd_futures(args) -> int:
             summary = summarize_futures_paper_ledger(args.ledger_path, contracts=contracts, mark_prices=_parse_marks(args.mark))
             print(json.dumps(summary, ensure_ascii=False))
             return 0
-    except (ContractSpecError, FuturesLedgerError, FileNotFoundError) as exc:
+    except (BrokerError, ContractSpecError, ExecutionValidationError, FuturesLedgerError, FileNotFoundError, MarketDataError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 2
     raise AssertionError(args.futures_command)
@@ -547,6 +577,11 @@ def _parse_marks(values: Sequence[str]) -> dict[str, Decimal]:
         symbol, price = value.split("=", 1)
         marks[symbol.strip().upper()] = Decimal(price.strip())
     return marks
+
+
+def _is_cli_index_future(value: str) -> bool:
+    normalized = value.strip().upper()
+    return "股指" in value or "INDEX" in normalized
 
 
 def _fixture_events(symbol: str) -> list[MarketEvent]:

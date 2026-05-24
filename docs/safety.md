@@ -35,3 +35,5 @@ Manual real orders use `approvals/*.json` records. The example approval is inten
 Order execution is limit-only and polls broker order status after submission. On timeout, the service sends `modify_order(CANCEL)` and reconciles only confirmed fills. Cancelled unfilled orders do not update inventory; cancelled partially filled orders update only the confirmed filled quantity. If a fill appears after cancellation, the audit log emits `reconciliation_warning` instead of silently ignoring it.
 
 Paper and dry-run outputs are not promises of real fillability, slippage, liquidity, profitability, or final OpenD execution state. This PR is stacked on PR1 and depends on PR1's dry-run / risk / signal semantics while intentionally using dict snapshots to avoid duplicating PR1 models.
+
+Futures support is research/paper-only. The CLI can validate local futures contract specs, append futures paper fills, summarize margin/PnL, and read OpenD futures contract metadata. It does not unlock futures trading, submit futures orders, or expose an approval path for futures real execution.
