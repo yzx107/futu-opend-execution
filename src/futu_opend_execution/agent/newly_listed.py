@@ -13,10 +13,10 @@ from typing import Any, Iterable
 from futu_opend_execution.agent.optimizer import CostReducerGrid, optimize_cost_reducer
 from futu_opend_execution.agent.runtime import TradingAgentConfig
 from futu_opend_execution.data.hshare_l2 import DEFAULT_HSHARE_L2_ROOT, HshareL2ReplayProvider
-from futu_opend_execution.data.hshare_top_of_book import HshareTopOfBookReplayProvider, symbol_code
+from futu_opend_execution.data.hshare_top_of_book import HshareTopOfBookReplayProvider, resolve_top_of_book_root, symbol_code
 
 DEFAULT_INSTRUMENT_PROFILE = Path("/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
-DEFAULT_TOP_OF_BOOK_ROOT = Path("/Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_only")
+DEFAULT_TOP_OF_BOOK_ROOT = Path("/Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat")
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +31,8 @@ class NewlyListedCandidate:
     instrument_family: str | None
     stock_research_candidate_status: str | None
     source_label: str | None
+    universe_status: str | None = None
+    caveat: str | None = None
 
     def to_jsonable(self) -> dict[str, Any]:
         return {**asdict(self), "available_trade_dates": list(self.available_trade_dates)}
@@ -39,6 +41,7 @@ class NewlyListedCandidate:
 def build_newly_listed_universe(
     *,
     instrument_profile_path: Path | str = DEFAULT_INSTRUMENT_PROFILE,
+    universe_path: Path | str | None = None,
     data_root: Path | str = DEFAULT_HSHARE_L2_ROOT,
     top_of_book_root: Path | str | None = None,
     listing_year: int = 2026,
@@ -48,15 +51,24 @@ def build_newly_listed_universe(
     stock_research_candidate_only: bool = True,
     max_symbols: int | None = None,
 ) -> dict[str, Any]:
-    candidates = _load_profile_candidates(
-        Path(instrument_profile_path),
-        listing_year=listing_year,
-        as_of=as_of,
-        stock_research_candidate_only=stock_research_candidate_only,
-    )
+    source_path = Path(universe_path) if universe_path else Path(instrument_profile_path)
+    if universe_path:
+        candidates = _load_universe_candidates(
+            source_path,
+            listing_year=listing_year,
+            as_of=as_of,
+            stock_research_candidate_only=stock_research_candidate_only,
+        )
+    else:
+        candidates = _load_profile_candidates(
+            source_path,
+            listing_year=listing_year,
+            as_of=as_of,
+            stock_research_candidate_only=stock_research_candidate_only,
+        )
     wanted_dates = tuple(dates or ())
     data_path = Path(data_root)
-    top_path = Path(top_of_book_root) if top_of_book_root else None
+    top_path = resolve_top_of_book_root(top_of_book_root) if top_of_book_root else None
     coverage = None if top_path is not None else _candidate_cleaned_coverage(data_path, dates=wanted_dates)
     rows: list[NewlyListedCandidate] = []
     for item in candidates:
@@ -82,6 +94,8 @@ def build_newly_listed_universe(
                 instrument_family=item.get("instrument_family"),
                 stock_research_candidate_status=item.get("stock_research_candidate_status"),
                 source_label=item.get("source_label"),
+                universe_status=item.get("universe_status"),
+                caveat=item.get("caveat"),
             )
         )
         if max_symbols is not None and len(rows) >= max_symbols:
@@ -90,14 +104,16 @@ def build_newly_listed_universe(
         "event": "newly_listed_universe",
         "listing_year": listing_year,
         "as_of": as_of.isoformat() if as_of else None,
-        "source": str(instrument_profile_path),
-        "data_root": str(top_of_book_root or data_root),
+        "source": str(source_path),
+        "universe_path": str(universe_path) if universe_path else None,
+        "instrument_profile_path": str(instrument_profile_path),
+        "data_root": str(top_path or data_path),
         "candidate_count": len(rows),
         "stock_research_candidate_only": stock_research_candidate_only,
         "min_trade_dates": min_trade_dates,
         "candidates": [row.to_jsonable() for row in rows],
         "limitations": [
-            "instrument_profile is a sidecar universe source, not a verified security master",
+            "Hshare universe rows are admitted only when universe_status is included" if universe_path else "instrument_profile is a sidecar universe source, not a verified security master",
             "stock_research_candidate is a conservative research lane, not pure common-equity proof",
         ],
     }
@@ -106,6 +122,7 @@ def build_newly_listed_universe(
 def optimize_newly_listed(
     *,
     instrument_profile_path: Path | str = DEFAULT_INSTRUMENT_PROFILE,
+    universe_path: Path | str | None = None,
     data_root: Path | str = DEFAULT_HSHARE_L2_ROOT,
     top_of_book_root: Path | str | None = None,
     listing_year: int = 2026,
@@ -120,6 +137,7 @@ def optimize_newly_listed(
 ) -> dict[str, Any]:
     universe = build_newly_listed_universe(
         instrument_profile_path=instrument_profile_path,
+        universe_path=universe_path,
         data_root=data_root,
         top_of_book_root=top_of_book_root,
         listing_year=listing_year,
@@ -224,6 +242,54 @@ def _load_profile_candidates(
     )
 
 
+def _load_universe_candidates(
+    path: Path,
+    *,
+    listing_year: int,
+    as_of: date | None,
+    stock_research_candidate_only: bool,
+) -> list[dict[str, Any]]:
+    try:
+        import polars as pl  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("newly-listed universe requires polars to read Hshare universe files") from exc
+    if not path.exists():
+        raise FileNotFoundError(path)
+    frame = pl.read_csv(path) if path.suffix.lower() == ".csv" else pl.read_parquet(path)
+    rows: list[dict[str, Any]] = []
+    as_of_text = as_of.isoformat() if as_of else None
+    for item in frame.to_dicts():
+        listing_date = _date_str(item.get("listing_date"))
+        if not listing_date or listing_date[:4] != str(listing_year):
+            continue
+        if as_of_text and listing_date > as_of_text:
+            continue
+        if str(item.get("universe_status") or "").lower() != "included":
+            continue
+        if stock_research_candidate_only and not bool(item.get("stock_research_candidate")):
+            continue
+        instrument_key = item.get("instrument_key") or item.get("symbol")
+        if not instrument_key:
+            continue
+        rows.append(
+            {
+                "instrument_key": symbol_code(str(instrument_key)),
+                "listing_date": listing_date,
+                "observed_first_date": item.get("first_trade_date") or item.get("observed_first_date"),
+                "observed_last_date": item.get("last_trade_date") or item.get("observed_last_date"),
+                "observed_trades_days": int(item.get("coverage_days") or _list_len(item.get("candidate_cleaned_trade_dates"))),
+                "observed_orders_days": int(item.get("coverage_days") or _list_len(item.get("candidate_cleaned_order_dates"))),
+                "instrument_family": item.get("instrument_family"),
+                "stock_research_candidate_status": "included",
+                "source_label": item.get("source_label"),
+                "universe_status": item.get("universe_status"),
+                "caveat": item.get("caveat"),
+            }
+        )
+    rows.sort(key=lambda item: (str(item["listing_date"]), str(item["instrument_key"])))
+    return rows
+
+
 def _available_dates(
     *,
     symbol: str,
@@ -295,9 +361,7 @@ def _candidate_cleaned_has_symbol(data_root: Path, *, date: str, symbol: str) ->
 
 
 def _top_of_book_dates(*, symbol: str, top_of_book_root: Path, dates: tuple[str, ...]) -> list[str]:
-    root = top_of_book_root
-    if not (root / "top_of_book_events").exists():
-        root = root / "orderbook_replay__top_of_book_only"
+    root = resolve_top_of_book_root(top_of_book_root)
     code = symbol_code(symbol)
     output = []
     for year_dir in sorted((root / "top_of_book_events").glob("year=*")):
@@ -437,6 +501,10 @@ def _markdown(summary: dict[str, Any]) -> str:
 
 def _date_str(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else (str(value) if value is not None else None)
+
+
+def _list_len(value: Any) -> int:
+    return len(value) if isinstance(value, (list, tuple)) else 0
 
 
 def _decimal(value: Any) -> Decimal:

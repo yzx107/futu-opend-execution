@@ -81,14 +81,15 @@ The optimizer uses the same fail-closed cost reducer gates as replay. If top-of-
 
 Read optimizer rankings defensively: rows with `open_quantity > 0` are unfinished sell legs, not completed high-sell/low-rebuy round trips. Prefer candidates with positive `realized_net_pnl`, completed `round_trips_completed`, low `open_quantity`, and low `quality_block_count`.
 
-Build the 2026 newly listed HK research universe from the local Hshare sidecar profile and tick coverage:
+Build the 2026 newly listed HK research universe from the Hshare-native universe handoff and top-of-book coverage:
 
 ```bash
 PYTHONPATH=src python -m futu_opend_execution.cli.main newly-listed-universe \
   --listing-year 2026 \
-  --data-root /Volumes/Data/港股Tick数据/candidate_cleaned \
-  --output-json reports/agent/newly_listed_universe_2026.json \
-  --output-md reports/agent/newly_listed_universe_2026.md
+  --universe-path /Volumes/Data/港股Tick数据/reference/newly_listed_hk/year=2026/newly_listed_hk_2026.parquet \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
+  --output-json reports/agent/newly_listed_universe_2026_handoff.json \
+  --output-md reports/agent/newly_listed_universe_2026_handoff.md
 ```
 
 Run a bounded newly listed cost-reducer optimization:
@@ -96,7 +97,8 @@ Run a bounded newly listed cost-reducer optimization:
 ```bash
 PYTHONPATH=src python -m futu_opend_execution.cli.main optimize-newly-listed \
   --listing-year 2026 \
-  --data-root /Volumes/Data/港股Tick数据/candidate_cleaned \
+  --universe-path /Volumes/Data/港股Tick数据/reference/newly_listed_hk/year=2026/newly_listed_hk_2026.parquet \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
   --date 2026-05-22 \
   --max-symbols 3 \
   --max-dates-per-symbol 1 \
@@ -109,7 +111,7 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main optimize-newly-listed \
   --report-md reports/agent/newly_listed_optimizer_smoke.md
 ```
 
-The newly listed optimizer is research/paper only. It reports `net_pnl_after_cost`, `cost_basis_reduction`, completed round trips, open-quantity penalty, and quality/risk block counts. If raw Hshare rows do not provide strategy-grade bid/ask depth, the strategy stays blocked and the ranking is not a tradable parameter recommendation.
+The newly listed optimizer is research/paper only. It reports `net_pnl_after_cost`, `cost_basis_reduction`, completed round trips, open-quantity penalty, and quality/risk block counts. With the Hshare-native universe, only `universe_status=included` rows are admitted. With the size-caveat top-of-book handoff, only `StrategyHandoffEligibleFlag=true` rows passing all replay-quality gates are executable. If Hshare rows do not provide strategy-grade bid/ask depth, the strategy stays blocked and the ranking is not a tradable parameter recommendation.
 
 Run live dry-run monitor from watchlist:
 
@@ -285,11 +287,11 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main replay HK.01609 \
   --cost-price 190 \
   --lot-size 15 \
   --date 2026-05-22 \
-  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_only \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
   --log-path logs/agent/replay_01609_top_of_book.jsonl
 ```
 
-Only rows passing the Hshare v2 quality gate are admitted as replay best bid/ask. Crossed, residue, excluded, same-millisecond-risk, or invalid rows are marked `book_quality=BLOCKED`. The top-of-book-only release does not include verified depth, queue semantics, or fill realism, so cost-reducer execution remains fail-closed when depth is unavailable.
+Only rows passing the Hshare v2 quality gate are admitted as replay best bid/ask. Crossed, residue, excluded, same-millisecond-risk, invalid, or `StrategyHandoffEligibleFlag=false` rows are marked `book_quality=BLOCKED`. The size-caveat release includes bounded best-price size, not executable queue priority or full-depth fill realism, so cost-reducer execution remains fail-closed when quality is ambiguous.
 
 ## Development
 

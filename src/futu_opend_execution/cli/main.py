@@ -87,6 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     universe.add_argument("--listing-year", type=int, default=2026)
     universe.add_argument("--as-of", default=None)
     universe.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    universe.add_argument("--universe-path", default=None, help="Optional Hshare-native newly listed universe parquet/csv")
     universe.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
     universe.add_argument("--top-of-book-root", default=None)
     universe.add_argument("--date", action="append", dest="dates")
@@ -99,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     optimize_new = sub.add_parser("optimize-newly-listed", help="Batch optimize cost reducer parameters for newly listed HK candidates")
     optimize_new.add_argument("--listing-year", type=int, default=2026)
     optimize_new.add_argument("--instrument-profile", default="/Volumes/Data/港股Tick数据/reference/instrument_profile/latest/instrument_profile.parquet")
+    optimize_new.add_argument("--universe-path", default=None, help="Optional Hshare-native newly listed universe parquet/csv")
     optimize_new.add_argument("--data-root", default=str(DEFAULT_HSHARE_L2_ROOT))
     optimize_new.add_argument("--top-of-book-root", default=None)
     optimize_new.add_argument("--date", action="append", dest="dates")
@@ -291,6 +293,7 @@ def _cmd_newly_listed_universe(args) -> int:
     as_of = datetime.fromisoformat(args.as_of).date() if args.as_of else None
     summary = build_newly_listed_universe(
         instrument_profile_path=args.instrument_profile,
+        universe_path=args.universe_path,
         data_root=args.data_root,
         top_of_book_root=args.top_of_book_root,
         listing_year=args.listing_year,
@@ -317,6 +320,7 @@ def _cmd_optimize_newly_listed(args) -> int:
     )
     summary = optimize_newly_listed(
         instrument_profile_path=args.instrument_profile,
+        universe_path=args.universe_path,
         data_root=args.data_root,
         top_of_book_root=args.top_of_book_root,
         listing_year=args.listing_year,

@@ -77,6 +77,74 @@ class HshareTopOfBookReplayTests(unittest.TestCase):
             self.assertTrue(states[1].book_residue)
             self.assertTrue(states[1].orderbook_limited)
 
+    def test_provider_requires_strategy_handoff_eligibility_when_present(self) -> None:
+        import polars as pl
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            partition = (
+                root
+                / "orderbook_replay__top_of_book_with_size_caveat"
+                / "top_of_book_events"
+                / "year=2026"
+                / "date=2026-05-22"
+                / "symbol=01609"
+            )
+            partition.mkdir(parents=True)
+            pl.DataFrame(
+                [
+                    {
+                        "SendTime": "2026-05-22T09:30:00",
+                        "symbol": "HK.01609",
+                        "TradePrice": 193.0,
+                        "TradeVolume": 100,
+                        "BestBidReplay": 192.9,
+                        "BestBidSizeReplay": 200,
+                        "BestAskReplay": 193.1,
+                        "BestAskSizeReplay": 300,
+                        "TopOfBookValidFlag": True,
+                        "ReplayQualityScore": 1.0,
+                        "CrossedWindowFlag": False,
+                        "ReplayResidueFlag": False,
+                        "ReplayWindowExcludedFlag": False,
+                        "SameMillisecondBatchRiskFlag": False,
+                        "StrategyHandoffEligibleFlag": True,
+                    },
+                    {
+                        "SendTime": "2026-05-22T09:30:01",
+                        "symbol": "HK.01609",
+                        "TradePrice": 193.2,
+                        "TradeVolume": 100,
+                        "BestBidReplay": 193.1,
+                        "BestBidSizeReplay": 200,
+                        "BestAskReplay": 193.3,
+                        "BestAskSizeReplay": 300,
+                        "TopOfBookValidFlag": True,
+                        "ReplayQualityScore": 1.0,
+                        "CrossedWindowFlag": False,
+                        "ReplayResidueFlag": False,
+                        "ReplayWindowExcludedFlag": False,
+                        "SameMillisecondBatchRiskFlag": False,
+                        "StrategyHandoffEligibleFlag": False,
+                    },
+                ]
+            ).write_parquet(partition / "part-00000.parquet")
+
+            provider = HshareTopOfBookReplayProvider(
+                data_root=root,
+                dates=["2026-05-22"],
+                symbols=["HK.01609"],
+            )
+            states = list(provider.iter_market_states())
+
+            self.assertEqual(len(states), 2)
+            self.assertEqual(states[0].book_quality, "OK")
+            self.assertFalse(states[0].book_depth_limited)
+            self.assertEqual(states[0].bid_size, Decimal("200"))
+            self.assertEqual(states[0].ask_size, Decimal("300"))
+            self.assertEqual(states[1].book_quality, "BLOCKED")
+            self.assertTrue(states[1].orderbook_limited)
+
 
 if __name__ == "__main__":
     unittest.main()

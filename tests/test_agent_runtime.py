@@ -42,8 +42,8 @@ class AgentRuntimeTests(unittest.TestCase):
             "--overextension-grid",
             "1.5,2.0",
         ])
-        universe = parser.parse_args(["newly-listed-universe", "--listing-year", "2026", "--date", "2026-05-22"])
-        optimize_new = parser.parse_args(["optimize-newly-listed", "--listing-year", "2026", "--max-symbols", "1"])
+        universe = parser.parse_args(["newly-listed-universe", "--listing-year", "2026", "--date", "2026-05-22", "--universe-path", "/tmp/u.parquet"])
+        optimize_new = parser.parse_args(["optimize-newly-listed", "--listing-year", "2026", "--max-symbols", "1", "--universe-path", "/tmp/u.parquet"])
         futures = parser.parse_args(["futures", "contracts", "--config", "configs/futures_contracts.example.json"])
         futures_info = parser.parse_args(["futures", "opend-info", "HK.HSI2606", "--check-trade-context"])
         futures_replay = parser.parse_args(["futures", "replay", "HK.HSI2606", "--fixture"])
@@ -54,7 +54,9 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(watchlist.command, "watchlist")
         self.assertEqual(optimize.command, "optimize-cost-reducer")
         self.assertEqual(universe.command, "newly-listed-universe")
+        self.assertEqual(universe.universe_path, "/tmp/u.parquet")
         self.assertEqual(optimize_new.command, "optimize-newly-listed")
+        self.assertEqual(optimize_new.universe_path, "/tmp/u.parquet")
         self.assertEqual(futures.command, "futures")
         self.assertEqual(futures.futures_command, "contracts")
         self.assertEqual(futures_info.futures_command, "opend-info")

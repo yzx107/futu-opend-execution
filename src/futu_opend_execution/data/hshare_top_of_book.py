@@ -11,9 +11,11 @@ from typing import Any
 from futu_opend_execution.data.market import MarketEvent, MarketState, build_market_states
 
 DEFAULT_HSHARE_TOP_OF_BOOK_ROOT = Path(
-    "/Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_only"
+    "/Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat"
 )
 NAMESPACE = "orderbook_replay__top_of_book_only"
+SIZE_CAVEAT_NAMESPACE = "orderbook_replay__top_of_book_with_size_caveat"
+SUPPORTED_NAMESPACES = (SIZE_CAVEAT_NAMESPACE, NAMESPACE)
 
 
 class HshareTopOfBookReplayProvider:
@@ -126,7 +128,7 @@ def _row_events(
 
 
 def _quality_ok(row: dict[str, Any]) -> bool:
-    return (
+    base_ok = (
         bool(row.get("TopOfBookValidFlag"))
         and _decimal(row.get("ReplayQualityScore")) == Decimal("1.0")
         and not bool(row.get("CrossedWindowFlag"))
@@ -134,12 +136,40 @@ def _quality_ok(row: dict[str, Any]) -> bool:
         and not bool(row.get("ReplayWindowExcludedFlag"))
         and not bool(row.get("SameMillisecondBatchRiskFlag"))
     )
+    if not base_ok:
+        return False
+    if "StrategyHandoffEligibleFlag" not in row:
+        return True
+    bid = _decimal(row.get("BestBidReplay") or row.get("best_bid"))
+    ask = _decimal(row.get("BestAskReplay") or row.get("best_ask"))
+    bid_size = _decimal(_first_present(row, ("BidSizeReplay", "BestBidSizeReplay", "bid_size", "BidSize")))
+    ask_size = _decimal(_first_present(row, ("AskSizeReplay", "BestAskSizeReplay", "ask_size", "AskSize")))
+    return (
+        bool(row.get("StrategyHandoffEligibleFlag"))
+        and bid is not None
+        and ask is not None
+        and bid > 0
+        and ask > 0
+        and ask >= bid
+        and bid_size is not None
+        and ask_size is not None
+        and bid_size > 0
+        and ask_size > 0
+    )
 
 
 def _namespace_root(root: Path) -> Path:
-    if (root / "top_of_book_events").exists() or root.name == NAMESPACE:
+    if (root / "top_of_book_events").exists() or root.name in SUPPORTED_NAMESPACES:
         return root
-    return root / NAMESPACE
+    for namespace in SUPPORTED_NAMESPACES:
+        candidate = root / namespace
+        if (candidate / "top_of_book_events").exists():
+            return candidate
+    return root / SIZE_CAVEAT_NAMESPACE
+
+
+def resolve_top_of_book_root(root: Path | str) -> Path:
+    return _namespace_root(Path(root))
 
 
 def _read_parquet_rows(path: Path, *, limit_rows: int | None) -> list[dict[str, Any]]:

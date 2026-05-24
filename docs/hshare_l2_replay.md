@@ -48,7 +48,7 @@ Treat the result as evidence only. Wire reconstructed depth into replay only aft
 OpenD Trading Agent can consume the bounded Hshare Lab v2 handoff:
 
 ```text
-/Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_only/top_of_book_events/
+/Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat/top_of_book_events/
 ```
 
 Use it only through the explicit replay flag:
@@ -59,7 +59,7 @@ PYTHONPATH=src python -m futu_opend_execution.cli.main replay HK.01609 \
   --cost-price 190 \
   --lot-size 15 \
   --date 2026-05-22 \
-  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_only \
+  --top-of-book-root /Volumes/Data/港股Tick数据/caveat/orderbook_replay__top_of_book_with_size_caveat \
   --log-path logs/agent/replay_01609_top_of_book.jsonl
 ```
 
@@ -71,5 +71,7 @@ The adapter enforces the Hshare handoff gates:
 - `ReplayResidueFlag=false`
 - `ReplayWindowExcludedFlag=false`
 - `SameMillisecondBatchRiskFlag=false`
+- `StrategyHandoffEligibleFlag=true` when the field exists
+- best bid/ask and best bid/ask size are positive when the field exists
 
-Rows that fail the gate are logged as `book_quality=BLOCKED` and remain unavailable for strategy execution. Rows that pass but contain only top-of-book prices are logged as `book_quality=OK_TOP_OF_BOOK_ONLY` with `book_depth_limited=true`; this preserves spread/mid evidence while keeping cost-reducer execution fail-closed because verified depth and imbalance are not available.
+Rows that fail the gate are logged as `book_quality=BLOCKED` and remain unavailable for strategy execution. Rows that pass but contain only top-of-book prices are logged as `book_quality=OK_TOP_OF_BOOK_ONLY` with `book_depth_limited=true`; rows from the size-caveat handoff with positive best-price size are logged as `book_quality=OK`. The size field is a bounded replay estimate, not queue priority or guaranteed fillability.
